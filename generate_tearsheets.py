@@ -31,6 +31,7 @@ def generate_tearsheets():
                 returns,
                 output=str(output_path),
                 title=f"funding-arb: {name}",
+                periods_per_year=1095,
             )
             print(f"Saved {output_path}")
         except Exception as e:
