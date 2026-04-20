@@ -142,34 +142,27 @@ This is **intended behaviour**. The high Sharpe (~6) comes from harvesting yield
 - **Highest absolute return:** Carry Concentrated (13.5% total return, Sharpe 6.16).
 - **Simple carry beats carry + term structure:** Adding term-structure filters as a mandatory second signal reduced both return and Sharpe, suggesting that the raw carry signal is the dominant alpha source.
 - **Drawdowns are minimal:** All carry variants experienced sub-1% maximum drawdowns over the ~4.75-year period, illustrating the low-volatility nature of the yield.
+- **The trade is reversible:** When funding rates turn deeply negative, the position can be flipped — **short spot + long perpetual** — to collect payments from the short side. The current implementation sits in cash during negative regimes, but the logic is symmetric. (did not tested, not a invest advice)
 
 ---
 
 ## Next Steps
 
-### 1. Regime Detection
-The current strategy uses a fixed 8% entry threshold. A dynamic threshold that adjusts based on the **cross-sectional median funding rate** could improve deployment in transitional regimes (e.g., 2025).
-
-### 2. Funding Rate Prediction
+### 1. Funding Rate Prediction
 Instead of only using backward-looking rolling means, add a lightweight predictor:
 - **Autoregressive model** (AR(1) or AR(3)) on funding rates
 - **Macro regime classifier** (BTC dominance, volatility, open-interest growth) to predict whether funding will persist
 
-### 3. Cross-Asset Rotation
-When crypto funding is low, rotate capital into other yield sources:
-- **FX carry** (USD/JPY, AUD/JPY) via similar delta-neutral frameworks
-- **Options yield** (selling covered calls on spot collateral)
-- **Stablecoin lending** (Aave, Compound) as a cash drag alternative
-
-### 4. Live Trading Integration
+### 2. Live Trading Integration
 - **Exchange API wrappers** for Binance/Bybit/OKX to automate position entry/exit
 - **Real-time funding rate monitor** with Telegram/Slack alerts when entry thresholds are breached
 - **Portfolio rebalancer** that checks hedge ratios and funding payments every 8 hours
 
-### 5. Risk Model Enhancements
-- **Fat-tail analysis:** Monte Carlo simulation with crypto-specific return distributions
-- **Stress testing:** What happens if funding turns deeply negative for 3+ months?
-- **Leverage optimisation:** Kelly criterion or risk-parity position sizing instead of fixed 20% max
+### 3. Bi-Directional Carry
+The current engine only harvests **positive** funding (long spot / short perp). A natural extension is to capture **negative** funding regimes by flipping the position:
+- **Short spot + long perpetual** when the 7-day mean funding rate is sustainably **negative** (< -8% annualised)
+- This requires modelling **spot borrow costs** (Binance margin, Aave, Compound) to ensure the spread between borrow cost and funding received is profitable
+- During 2026, this would have turned the -11.56% funding environment into a yield source rather than a cash-drag period
 
 ---
 
