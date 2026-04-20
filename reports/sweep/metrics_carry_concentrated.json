@@ -1,0 +1,18 @@
+{
+  "sharpe": 6.16,
+  "annual_return_pct": 2.7,
+  "max_drawdown_pct": -0.78,
+  "sortino": 2.63,
+  "calmar": 3.44,
+  "total_return_pct": 13.5,
+  "total_trades": 189,
+  "win_rate_pct": 68.1,
+  "avg_win": 242.61,
+  "avg_loss": -68.68,
+  "profit_factor": 7.54,
+  "avg_hold_periods": 85.8,
+  "avg_hold_days": 28.6,
+  "n_years": 4.75,
+  "final_equity": 113496.9,
+  "initial_capital": 100000.0
+}
