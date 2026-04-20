@@ -36,7 +36,7 @@ services:
         echo 'Downloading data...' &&
         python -m data.downloader --config config/default.yaml &&
         echo 'Running backtest...' &&
-        python -m backtest.runner --config config/default.yaml
+        python run_parameter_sweep.py
       "
 
   # Jupyter notebook server for research

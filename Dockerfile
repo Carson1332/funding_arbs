@@ -21,4 +21,4 @@ RUN pip install --no-cache-dir -e ".[dev]"
 RUN mkdir -p data/cache results
 
 # Default command: run backtest
-CMD ["python", "-m", "backtest.runner", "--config", "config/default.yaml"]
+CMD ["python", "run_parameter_sweep.py"]

@@ -260,7 +260,7 @@ rebalance_threshold: 0.03       # 3% drift triggers hedge rebalance
 - Steps:
   1. Install deps
   2. Download latest data (`python -m data.downloader`)
-  3. Run backtest (`python -m backtest.runner`)
+  3. Run parameter sweep (`python run_parameter_sweep.py`)
   4. Extract metrics from `results/metrics.json`
   5. Update BYOB badges (Sharpe, Annual Return, Max DD)
   6. Commit `results/` to repo (`[skip ci]`)
