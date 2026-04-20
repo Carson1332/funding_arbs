@@ -1,0 +1,2 @@
+# Exclude generated results from GitHub language stats
+results/** linguist-generated=true
