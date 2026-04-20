@@ -39,14 +39,31 @@ The backtest uses the following data sources and characteristics:
 
 ---
 
-## Strategy Rationale
 
-### Why Z-Score Mean Reversion Does Not Work
+## Strategy Evolution
 
-An initial rolling z-score approach (entry at z > 1.5, exit at z = 0) was explored and abandoned:
-- **Logic:** Bet that extreme funding rates will mean-revert.
-- **Reality:** Funding rates in crypto exhibit strong **autocorrelation**, not mean reversion. Extreme rates tend to persist.
-- **Result:** The strategy entered on temporary spikes, exited as rates "normalised," and locked in losses. During sustained high-funding regimes it sat in cash while carry traders collected yield.
+### Baseline: Z-Score Mean Reversion (Poor Performance)
+
+Our first approach used a rolling z-score on funding rates:
+- **Entry:** When z-score > 1.5 and annualised rate > 5%
+- **Exit:** When z-score returns to 0
+- **Logic:** Bet that extreme funding rates will mean-revert
+
+**Why it failed:**
+- Funding rates in crypto exhibit strong **autocorrelation**, not mean reversion. Extreme rates tend to persist rather than immediately reverse.
+- The strategy entered on temporary spikes and exited as rates "normalised," often locking in losses.
+- During sustained high-funding regimes (common in bull markets), the strategy sat in cash while carry traders collected consistent yield.
+
+**Baseline Results:**
+
+| Metric | Value |
+|--------|-------|
+| Cumulative Return | **-6.27%** |
+| Annual Return | -0.3% |
+| Sharpe Ratio | -0.95 |
+| Max Drawdown | -10.0% |
+| Win Rate | 17.0% |
+
 
 ### Adaptive Carry (Trend-Following)
 
