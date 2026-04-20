@@ -63,8 +63,6 @@ Our first approach used a rolling z-score on funding rates:
 | Max Drawdown | -10.0% |
 | Win Rate | 17.0% |
 
-![Baseline Equity Curve](results/baseline/equity_curve.csv)
-
 *(The baseline tearsheet is available at `results/baseline/tearsheet.html`.)*
 
 ### Improved Approach: Adaptive Carry (Trend-Following)
