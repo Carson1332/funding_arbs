@@ -64,6 +64,9 @@ Thumbs.db
 .DS_Store
 *.log
 
+# --- Agent instructions (local only) ---
+AGENTS.md
+
 # --- Results ---
 # Images, HTML tearsheets and JSON metrics are committed for README display.
 # Large CSV time-series and trade logs are generated locally and excluded.
