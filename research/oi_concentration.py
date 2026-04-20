@@ -144,7 +144,9 @@ class OIConcentration:
 
         # Merge with funding data
         merged = pd.merge(
-            oi_signals[["timestamp", "symbol", "exchange", "oi_zscore", "crowded_flag", "oi_percentile"]],
+            oi_signals[
+                ["timestamp", "symbol", "exchange", "oi_zscore", "crowded_flag", "oi_percentile"]
+            ],
             funding_df[["timestamp", "symbol", "exchange", "funding_rate"]],
             on=["timestamp", "symbol", "exchange"],
             how="inner",
@@ -152,6 +154,8 @@ class OIConcentration:
 
         # Composite score: high funding is good, but crowded OI is bad
         merged["funding_annualised"] = merged["funding_rate"] * 3 * 365
-        merged["composite_score"] = merged["funding_annualised"] * (1 - 0.5 * merged["crowded_flag"])
+        merged["composite_score"] = merged["funding_annualised"] * (
+            1 - 0.5 * merged["crowded_flag"]
+        )
 
         return merged

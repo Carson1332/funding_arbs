@@ -30,9 +30,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from backtest.enhanced_engine import (
-    load_all_funding_data,
     compute_funding_features,
-    compute_cross_exchange_features,
+    load_all_funding_data,
 )
 
 
@@ -184,7 +183,7 @@ class SweepBacktest:
     def run_adaptive_carry(self, df: pd.DataFrame) -> PortfolioState:
         """
         Optimized Adaptive Carry strategy.
-        
+
         Design choices:
         - No take-profit to let winners run
         - Signal-strength-based position sizing
@@ -230,12 +229,17 @@ class SweepBacktest:
                     continue
 
                 # 7d mean drops below exit threshold
-                if pd.notna(r.get("fr_mean_7d")) and r["fr_mean_7d"] * 3 * 365 < self.config.exit_ann_rate:
+                ann_7d = r["fr_mean_7d"] * 3 * 365
+                if pd.notna(r.get("fr_mean_7d")) and ann_7d < self.config.exit_ann_rate:
                     self._close(ts, key, "low_rate")
                     continue
 
                 # Strong negative momentum
-                if pd.notna(r.get("fr_momentum_7d")) and r["fr_momentum_7d"] < self.config.exit_momentum_threshold:
+                mom_7d = r["fr_momentum_7d"]
+                if (
+                    pd.notna(r.get("fr_momentum_7d"))
+                    and mom_7d < self.config.exit_momentum_threshold
+                ):
                     self._close(ts, key, "neg_momentum")
                     continue
 
@@ -263,7 +267,11 @@ class SweepBacktest:
                     if r["fr_momentum_3d"] < 0:
                         continue
 
-                    if pd.notna(r.get("positive_streak")) and r["positive_streak"] < self.config.min_positive_streak:
+                    streak = r["positive_streak"]
+                    if (
+                        pd.notna(r.get("positive_streak"))
+                        and streak < self.config.min_positive_streak
+                    ):
                         continue
 
                     if pd.notna(r.get("ema_crossover")) and r["ema_crossover"] < 0:
@@ -300,11 +308,11 @@ class SweepBacktest:
     def run_carry_plus_ts(self, df: pd.DataFrame) -> PortfolioState:
         """
         Combined Carry + Term Structure strategy.
-        
+
         Entry requires BOTH:
         - Carry signal: 7d mean > 6% annualised, positive momentum
         - Term structure: slope > 0 (short > long)
-        
+
         More selective than either strategy in isolation.
         """
         features = compute_funding_features(df)

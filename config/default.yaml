@@ -42,4 +42,4 @@ max_drawdown_exit: 0.10             # Exit all positions if DD > 10%
 max_single_loss: 0.02               # Exit position if loss > 2% of equity
 
 # --- Output ---
-output_dir: "results/baseline"
+output_dir: "results/sweep"

@@ -1,7 +1,8 @@
 """Tests for fee model."""
 
 import pytest
-from backtest.fee_model import FeeModel, FeeSchedule, EXCHANGE_FEES
+
+from backtest.fee_model import EXCHANGE_FEES, FeeModel, FeeSchedule
 
 
 class TestFeeModel:

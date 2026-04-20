@@ -18,7 +18,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 
@@ -137,7 +136,9 @@ class FundingTermStructure:
             g["prev_regime"] = g["regime"].shift(1)
             transitions = g[g["regime"] != g["prev_regime"]].copy()
             if len(transitions) > 0:
-                transitions["transition"] = transitions["prev_regime"] + " → " + transitions["regime"]
+                transitions["transition"] = (
+                    transitions["prev_regime"] + " → " + transitions["regime"]
+                )
                 results.append(transitions)
 
         if not results:

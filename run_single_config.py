@@ -21,9 +21,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from backtest.enhanced_engine import load_all_funding_data, compute_funding_features
-from run_parameter_sweep import SweepConfig, SweepBacktest, compute_metrics
-
+from backtest.enhanced_engine import load_all_funding_data
+from run_parameter_sweep import SweepBacktest, SweepConfig, compute_metrics
 
 CONFIGS = {
     "carry_strict": {
@@ -143,7 +142,9 @@ def build_summary():
 def main():
     parser = argparse.ArgumentParser(description="Run single backtest config")
     parser.add_argument("--name", type=str, default=None, help="Config name to run")
-    parser.add_argument("--summary", action="store_true", help="Build summary from existing results")
+    parser.add_argument(
+        "--summary", action="store_true", help="Build summary from existing results"
+    )
     args = parser.parse_args()
 
     if args.summary:

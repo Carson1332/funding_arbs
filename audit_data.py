@@ -3,10 +3,11 @@ Data Integrity Audit:
 Verify that the backtest uses ONLY the original cached data from the zip,
 and that no data was fabricated or modified.
 """
+import hashlib
 import sys
 from pathlib import Path
+
 import pandas as pd
-import hashlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -67,7 +68,7 @@ def audit():
 
     # 5. Check if any new data files were created by the backtest
     print("\n[5] Files created by backtest (NOT original data):")
-    results_dirs = [Path("results/baseline"), Path("results/sweep")]
+    results_dirs = [Path("results/sweep")]
     for d in results_dirs:
         if d.exists():
             files = list(d.glob("*"))

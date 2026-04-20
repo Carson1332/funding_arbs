@@ -13,7 +13,7 @@ Default fee schedules are based on typical VIP-0 tier rates.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 
@@ -123,7 +123,9 @@ class FeeModel:
         slippage = notional * (self.schedule.slippage_bps / 10000)
         return fee + slippage
 
-    def entry_cost(self, spot_qty: float, spot_price: float, perp_qty: float, perp_price: float) -> float:
+    def entry_cost(
+        self, spot_qty: float, spot_price: float, perp_qty: float, perp_price: float
+    ) -> float:
         """
         Total cost to enter a delta-neutral position (buy spot + short perp).
         """
@@ -132,7 +134,9 @@ class FeeModel:
             + self.perp_trade_cost(perp_qty, perp_price, is_maker=False)
         )
 
-    def exit_cost(self, spot_qty: float, spot_price: float, perp_qty: float, perp_price: float) -> float:
+    def exit_cost(
+        self, spot_qty: float, spot_price: float, perp_qty: float, perp_price: float
+    ) -> float:
         """
         Total cost to exit a delta-neutral position (sell spot + close perp short).
         """

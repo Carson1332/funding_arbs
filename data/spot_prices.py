@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -129,7 +128,10 @@ class OHLCVDownloader:
 
         if not all_candles:
             return pd.DataFrame(
-                columns=["timestamp", "symbol", "exchange", "open", "high", "low", "close", "volume"]
+                columns=[
+                    "timestamp", "symbol", "exchange", "open", "high",
+                    "low", "close", "volume",
+                ]
             )
         return pd.DataFrame(all_candles)
 

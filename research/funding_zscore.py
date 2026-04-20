@@ -67,7 +67,10 @@ class FundingZScore:
             g["rolling_std"] = g["funding_rate"].rolling(
                 self.params.lookback_periods, min_periods=10
             ).std()
-            g["zscore"] = (g["funding_rate"] - g["rolling_mean"]) / g["rolling_std"].replace(0, np.nan)
+            g["zscore"] = (
+                (g["funding_rate"] - g["rolling_mean"])
+                / g["rolling_std"].replace(0, np.nan)
+            )
 
             # Annualised rate filter
             g["annualised_rate"] = g["funding_rate"] * 3 * 365

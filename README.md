@@ -39,33 +39,16 @@ The backtest uses the following data sources and characteristics:
 
 ---
 
-## Strategy Evolution
+## Strategy Rationale
 
-### Baseline: Z-Score Mean Reversion (Poor Performance)
+### Why Z-Score Mean Reversion Does Not Work
 
-Our first approach used a rolling z-score on funding rates:
-- **Entry:** When z-score > 1.5 and annualised rate > 5%
-- **Exit:** When z-score returns to 0
-- **Logic:** Bet that extreme funding rates will mean-revert
+An initial rolling z-score approach (entry at z > 1.5, exit at z = 0) was explored and abandoned:
+- **Logic:** Bet that extreme funding rates will mean-revert.
+- **Reality:** Funding rates in crypto exhibit strong **autocorrelation**, not mean reversion. Extreme rates tend to persist.
+- **Result:** The strategy entered on temporary spikes, exited as rates "normalised," and locked in losses. During sustained high-funding regimes it sat in cash while carry traders collected yield.
 
-**Why it failed:**
-- Funding rates in crypto exhibit strong **autocorrelation**, not mean reversion. Extreme rates tend to persist rather than immediately reverse.
-- The strategy entered on temporary spikes and exited as rates "normalised," often locking in losses.
-- During sustained high-funding regimes (common in bull markets), the strategy sat in cash while carry traders collected consistent yield.
-
-**Baseline Results:**
-
-| Metric | Value |
-|--------|-------|
-| Cumulative Return | **-6.27%** |
-| Annual Return | -0.3% |
-| Sharpe Ratio | -0.95 |
-| Max Drawdown | -10.0% |
-| Win Rate | 17.0% |
-
-*(The baseline tearsheet is available at `results/baseline/tearsheet.html`.)*
-
-### Improved Approach: Adaptive Carry (Trend-Following)
+### Adaptive Carry (Trend-Following)
 
 We shifted the rationale from *mean reversion* to *trend following*:
 - **Entry:** When the 7-day mean funding rate is sustainably high (> 8% annualised), momentum is positive, and the rate has been positive for multiple consecutive periods.
@@ -145,7 +128,6 @@ pip install -e ".[dev]"
 python -m data.downloader --config config/default.yaml
 
 # 4. Run backtests to generate results locally
-python -m backtest.runner --config config/default.yaml          # baseline
 python run_parameter_sweep.py                                    # carry sweep
 python plot_sweep_results.py                                     # comparison charts
 python generate_tearsheets.py                                    # QuantStats HTML reports
@@ -185,14 +167,9 @@ funding_arbs/
 │   ├── term_structure.py     # Yield-curve-style analysis
 │   └── kalman_hedge.py       # Dynamic hedge ratio (Kalman filter)
 ├── backtest/
-│   ├── simulator.py          # Core 8h replay engine
 │   ├── enhanced_engine.py    # Carry-trade backtest engine
-│   ├── fee_model.py          # Realistic cost model
-│   ├── portfolio.py          # Position + equity tracking
-│   ├── runner.py             # Pipeline orchestration
-│   └── report.py             # Metrics + tearsheet generation
+│   └── fee_model.py          # Realistic cost model
 ├── results/
-│   ├── baseline/             # Z-score baseline outputs
 │   ├── sweep/                # Adaptive carry sweep outputs
 │   └── images/               # Comparison plots
 ├── tests/                    # pytest suite

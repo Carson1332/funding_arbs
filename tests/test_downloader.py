@@ -1,8 +1,6 @@
 """Tests for data downloader module."""
 
-import pytest
 import pandas as pd
-from datetime import datetime, timezone
 
 from data.downloader import FundingRateDownloader
 

@@ -1,16 +1,18 @@
 """Tests for research signal modules."""
 
-import pytest
-import numpy as np
-import pandas as pd
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
+import pandas as pd
+
+from research.basis_momentum import BasisMomentum
 from research.funding_zscore import FundingZScore, ZScoreParams
-from research.basis_momentum import BasisMomentum, BasisMomentumParams
-from research.term_structure import FundingTermStructure, TermStructureParams
+from research.term_structure import FundingTermStructure
 
 
-def _make_funding_df(n: int = 200, rate_mean: float = 0.0001, rate_std: float = 0.00005) -> pd.DataFrame:
+def _make_funding_df(
+    n: int = 200, rate_mean: float = 0.0001, rate_std: float = 0.00005
+) -> pd.DataFrame:
     """Generate synthetic funding rate data for testing."""
     np.random.seed(42)
     timestamps = [

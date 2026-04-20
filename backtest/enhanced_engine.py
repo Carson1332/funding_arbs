@@ -29,11 +29,9 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
-
 
 # ============================================================================
 # DATA LOADING
@@ -168,7 +166,7 @@ class StrategyConfig:
 class CarryPosition:
     """
     A delta-neutral carry position.
-    
+
     Capital is LOCKED as collateral, not spent.
     P&L = cumulative funding payments - trading costs.
     """
@@ -272,7 +270,7 @@ class EnhancedBacktest:
         return (len(self.state.positions) < self.config.max_positions and
                 self.state.available_capital > self.state.equity * 0.05)
 
-    def _open_position(self, ts, symbol, exchange, rate, 
+    def _open_position(self, ts, symbol, exchange, rate,
                        exchange_short="", exchange_long="", is_cross=False):
         """Open a carry position."""
         collateral = self._position_size()
@@ -281,7 +279,10 @@ class EnhancedBacktest:
 
         entry_cost = self._entry_cost_only(collateral)
 
-        key = f"{symbol}_{exchange}" if not is_cross else f"{symbol}_{exchange_short}_{exchange_long}"
+        if is_cross:
+            key = f"{symbol}_{exchange_short}_{exchange_long}"
+        else:
+            key = f"{symbol}_{exchange}"
 
         pos = CarryPosition(
             symbol=symbol,
@@ -333,14 +334,14 @@ class EnhancedBacktest:
     def run_adaptive_carry(self, df: pd.DataFrame) -> PortfolioState:
         """
         Adaptive Carry: exploit funding rate autocorrelation.
-        
+
         Entry: 7d mean > 8% ann AND momentum positive AND positive streak >= 6
         Exit: 7d mean < 3% ann OR momentum strongly negative OR rate < 0 for 3+ periods
         """
         features = compute_funding_features(df)
         binance = features[features["exchange"] == "binance"].copy()
         timestamps = sorted(binance["timestamp"].unique())
-        
+
         print(f"Running Adaptive Carry: {len(timestamps)} periods, "
               f"{binance['symbol'].nunique()} symbols")
 

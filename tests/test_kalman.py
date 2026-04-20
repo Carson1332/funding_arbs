@@ -1,7 +1,7 @@
 """Tests for Kalman filter hedge ratio estimation."""
 
-import pytest
 import numpy as np
+import pytest
 
 from research.kalman_hedge import SimpleHedgeRatio
 

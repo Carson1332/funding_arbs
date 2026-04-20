@@ -22,8 +22,6 @@ import ccxt
 import pandas as pd
 import yaml
 
-from data.schemas import FundingRateRecord
-
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
