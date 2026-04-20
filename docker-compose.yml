@@ -1,0 +1,63 @@
+version: "3.9"
+
+services:
+  # PostgreSQL + TimescaleDB for production data storage
+  db:
+    image: timescale/timescaledb:latest-pg15
+    environment:
+      POSTGRES_USER: funding_arb
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-funding_arb_dev}
+      POSTGRES_DB: funding_arb
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U funding_arb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Main application
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://funding_arb:${DB_PASSWORD:-funding_arb_dev}@db:5432/funding_arb
+      COINAPI_KEY: ${COINAPI_KEY:-}
+    volumes:
+      - ./data/cache:/app/data/cache
+      - ./results:/app/results
+      - ./config:/app/config
+    command: >
+      sh -c "
+        echo 'Downloading data...' &&
+        python -m data.downloader --config config/default.yaml &&
+        echo 'Running backtest...' &&
+        python -m backtest.runner --config config/default.yaml
+      "
+
+  # Jupyter notebook server for research
+  notebook:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://funding_arb:${DB_PASSWORD:-funding_arb_dev}@db:5432/funding_arb
+      COINAPI_KEY: ${COINAPI_KEY:-}
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/app/notebooks
+      - ./data/cache:/app/data/cache
+      - ./results:/app/results
+    command: >
+      jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser
+      --NotebookApp.token='' --NotebookApp.password=''
+      --notebook-dir=/app/notebooks
+
+volumes:
+  pgdata:

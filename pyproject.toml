@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "funding-arb"
+version = "0.1.0"
+description = "Delta-neutral crypto funding rate arbitrage — research framework with trackable backtest results"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Carson1332"},
+]
+
+dependencies = [
+    "ccxt>=4.0",
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "pyarrow>=14.0",
+    "requests>=2.31",
+    "sqlalchemy>=2.0",
+    "filterpy>=1.4",
+    "plotly>=5.18",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "ruff>=0.1",
+    "mypy>=1.7",
+    "quantstats>=0.0.62",
+    "jupyter>=1.0",
+    "ipykernel>=6.0",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+]
+db = [
+    "psycopg2-binary>=2.9",
+    "timescaledb>=0.1",
+]
+
+[tool.setuptools.packages.find]
+include = ["data*", "research*", "backtest*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true

@@ -1,0 +1,82 @@
+name: Weekly Backtest
+
+on:
+  schedule:
+    - cron: '0 6 * * 0'          # every Sunday 6am UTC
+  push:
+    paths: ['research/**', 'backtest/**', 'config/**']
+  workflow_dispatch:               # allow manual trigger
+
+jobs:
+  run-backtest:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Download latest data
+        env:
+          COINAPI_KEY: ${{ secrets.COINAPI_KEY }}
+        run: python -m data.downloader --config config/default.yaml
+
+      - name: Run backtest
+        run: python -m backtest.runner --config config/default.yaml
+
+      - name: Extract metrics for badge
+        id: metrics
+        run: |
+          echo "sharpe=$(python -c "import json; print(json.load(open('results/metrics.json'))['sharpe'])")" >> $GITHUB_OUTPUT
+          echo "annual_return=$(python -c "import json; print(json.load(open('results/metrics.json'))['annual_return_pct'])")" >> $GITHUB_OUTPUT
+          echo "max_dd=$(python -c "import json; print(json.load(open('results/metrics.json'))['max_drawdown_pct'])")" >> $GITHUB_OUTPUT
+
+      - name: Update Sharpe badge
+        uses: RubbaBoy/BYOB@v1.3.0
+        with:
+          NAME: sharpe
+          LABEL: 'Sharpe'
+          STATUS: ${{ steps.metrics.outputs.sharpe }}
+          COLOR: 0e8a16
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Return badge
+        uses: RubbaBoy/BYOB@v1.3.0
+        with:
+          NAME: annual_return
+          LABEL: 'Annual Return'
+          STATUS: '${{ steps.metrics.outputs.annual_return }}%'
+          COLOR: 0e8a16
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Update Max DD badge
+        uses: RubbaBoy/BYOB@v1.3.0
+        with:
+          NAME: max_dd
+          LABEL: 'Max DD'
+          STATUS: '${{ steps.metrics.outputs.max_dd }}%'
+          COLOR: yellow
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add results/
+          git diff --staged --quiet || git commit -m "chore: update backtest results [skip ci]"
+          git push
+
+      - name: Publish tearsheet to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./results
+          destination_dir: reports

@@ -1,0 +1,75 @@
+# =============================================================================
+# funding-arb .gitignore
+# =============================================================================
+# Data privacy: cached market data is stored locally and NOT committed.
+# Public users can see the logic and results but not the raw data.
+# They can run the downloaders themselves to populate their own cache.
+# =============================================================================
+
+# --- Local Data Cache (PRIVATE — do not commit) ---
+data/cache/
+data/cache/**
+*.parquet
+*.db
+*.sqlite
+*.sqlite3
+
+# --- API Keys & Secrets ---
+.env
+.env.local
+.env.production
+secrets.yaml
+*.key
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# --- Virtual Environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Testing ---
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# --- OS ---
+Thumbs.db
+.DS_Store
+*.log
+
+# --- Results ---
+# Images, HTML tearsheets and JSON metrics are committed for README display.
+# Large CSV time-series and trade logs are generated locally and excluded.
+results/**/*.csv
+results/**/trades_*.csv
+results/**/trade_log.csv
+results/**/equity_*.csv
+results/**/combined_equity.csv
+results/**/sweep_comparison.csv

@@ -1,0 +1,69 @@
+# =============================================================================
+# Universe: 50 Perpetual Pairs to Track
+# =============================================================================
+# Format: ccxt unified symbol (BASE/QUOTE:SETTLE)
+# These are the most liquid USDT-margined perpetual contracts
+# available across Binance, Bybit, and OKX.
+
+universe:
+  # --- Tier 1: Major (highest liquidity) ---
+  - BTC/USDT:USDT
+  - ETH/USDT:USDT
+  - BNB/USDT:USDT
+  - SOL/USDT:USDT
+  - XRP/USDT:USDT
+
+  # --- Tier 2: Large Cap ---
+  - DOGE/USDT:USDT
+  - ADA/USDT:USDT
+  - AVAX/USDT:USDT
+  - DOT/USDT:USDT
+  - LINK/USDT:USDT
+  - MATIC/USDT:USDT
+  - UNI/USDT:USDT
+  - LTC/USDT:USDT
+  - ATOM/USDT:USDT
+  - FIL/USDT:USDT
+
+  # --- Tier 3: Mid Cap ---
+  - NEAR/USDT:USDT
+  - APT/USDT:USDT
+  - ARB/USDT:USDT
+  - OP/USDT:USDT
+  - SUI/USDT:USDT
+  - INJ/USDT:USDT
+  - SEI/USDT:USDT
+  - TIA/USDT:USDT
+  - FET/USDT:USDT
+  - RNDR/USDT:USDT
+
+  # --- Tier 4: DeFi ---
+  - AAVE/USDT:USDT
+  - MKR/USDT:USDT
+  - CRV/USDT:USDT
+  - COMP/USDT:USDT
+  - SNX/USDT:USDT
+  - SUSHI/USDT:USDT
+  - DYDX/USDT:USDT
+  - LDO/USDT:USDT
+  - GMX/USDT:USDT
+  - PENDLE/USDT:USDT
+
+  # --- Tier 5: Layer 1/2 ---
+  - ALGO/USDT:USDT
+  - FTM/USDT:USDT
+  - HBAR/USDT:USDT
+  - ICP/USDT:USDT
+  - EOS/USDT:USDT
+  - XLM/USDT:USDT
+  - VET/USDT:USDT
+  - SAND/USDT:USDT
+  - MANA/USDT:USDT
+  - AXS/USDT:USDT
+
+  # --- Tier 6: Meme / High Volatility ---
+  - SHIB/USDT:USDT
+  - PEPE/USDT:USDT
+  - WIF/USDT:USDT
+  - BONK/USDT:USDT
+  - FLOKI/USDT:USDT

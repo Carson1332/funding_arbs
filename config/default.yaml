@@ -1,0 +1,45 @@
+# =============================================================================
+# funding-arb: Default Configuration
+# =============================================================================
+
+# --- Data Settings ---
+data_start: "2024-01-01"           # Start date for historical data
+exchanges:
+  - binance
+  - bybit
+  - okx
+
+# CoinAPI (premium data source, optional)
+use_coinapi: true                  # Set true + COINAPI_KEY env var to use
+ohlcv_timeframe: "8h"              # Align with funding rate intervals
+
+# --- Signal Parameters ---
+zscore_lookback: 90                 # Rolling window for z-score (8h periods)
+zscore_entry: 1.5                   # Z-score threshold to enter
+zscore_exit: 0.0                    # Z-score threshold to exit
+min_annualised_rate: 0.05           # Minimum 5% annualised funding to enter
+
+# --- Basis Momentum ---
+basis_lookback: 12                  # 12 × 8h = 4 days
+basis_momentum_lookback: 6          # 6 × 8h = 2 days
+basis_entry_bps: 5.0                # Entry threshold in basis points
+basis_exit_bps: -2.0                # Exit threshold in basis points
+
+# --- Backtest Settings ---
+initial_capital: 100000             # Starting capital in USDT
+max_positions: 10                   # Maximum concurrent positions
+max_position_pct: 0.15              # Max 15% of equity per position
+primary_exchange: "binance"         # Primary exchange for simulation
+
+# --- Hedge Ratio ---
+use_kalman_hedge: true              # Use Kalman filter (requires filterpy)
+kalman_delta: 0.0001                # Process noise (higher = more responsive)
+kalman_R: 1.0                       # Measurement noise (higher = smoother)
+rebalance_threshold: 0.03           # 3% drift triggers hedge rebalance
+
+# --- Risk Management ---
+max_drawdown_exit: 0.10             # Exit all positions if DD > 10%
+max_single_loss: 0.02               # Exit position if loss > 2% of equity
+
+# --- Output ---
+output_dir: "results/baseline"

@@ -1,0 +1,13 @@
+{
+  "sharpe": -0.95,
+  "annual_return_pct": -0.3,
+  "max_drawdown_pct": -10.0,
+  "sortino": -1.13,
+  "calmar": -0.03,
+  "total_trades": 694,
+  "win_rate": 17.0,
+  "backtest_start": "2024-01-01 00:00:00+00:00",
+  "backtest_end": "2026-04-20 08:00:00+00:00",
+  "final_equity": 93734.01,
+  "initial_capital": 100000.0
+}
