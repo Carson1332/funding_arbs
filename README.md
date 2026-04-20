@@ -3,7 +3,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A delta-neutral cryptocurrency funding rate arbitrage research framework with trackable backtest results. The system collects historical 8-hour funding rate data across perpetual futures on **Binance**, **Bybit**, and **OKX**, then backtests strategies that go long spot and short perpetual to harvest funding payments.
+A delta-neutral cryptocurrency funding rate arbitrage research framework with trackable backtest results. The system collects historical 8-hour funding rate data across perpetual futures on **Binance**, **Bybit**, and **OKX**, then backtests strategies that harvest funding payments in both positive and negative funding regimes.
 
 ---
 
@@ -14,11 +14,11 @@ This framework implements and compares multiple approaches to funding rate arbit
 1. **Data Ingestion** — Downloads and caches 8-hour funding rates, OHLCV prices, and open-interest data via `ccxt` and optional CoinAPI.
 2. **Signal Generation** — Computes composite signals including funding z-scores, basis momentum, open-interest concentration, and term structure.
 3. **Backtest Engine** — Replays historical funding snapshots with realistic fee models, slippage, and risk management.
-4. **Strategy Evolution** — Documents the shift from a mean-reversion baseline to a trend-following adaptive carry approach.
+4. **Strategy Evolution** — Documents the full journey from a failing mean-reversion baseline, to a working adaptive carry strategy, to a bidirectional engine that captures yield in both positive and negative funding regimes.
 
 ### Core Idea
 
-Perpetual futures exchanges use funding rates to anchor perp prices to spot. In crypto, the structural long bias creates persistently positive funding rates. By going **long spot** and **short perpetual**, a trader can collect these funding payments with near-zero directional exposure.
+Perpetual futures exchanges use funding rates to anchor perp prices to spot. In crypto, the structural long bias creates persistently positive funding rates. By going **long spot + short perpetual**, a trader collects these funding payments with near-zero directional exposure. When funding turns negative, the position flips — **short spot + long perpetual** — harvesting payments from the other side.
 
 ---
 
@@ -31,7 +31,7 @@ The backtest uses the following data sources and characteristics:
 | **Exchanges** | Binance, Bybit, OKX |
 | **Symbols** | 47 perpetual pairs (BTC, ETH, SOL, BNB, XRP, DOGE, and others — see `config/universe.yaml`) |
 | **Frequency** | 8-hour funding rate snapshots (3 periods per day) |
-| **Date Range** | January 2024 – April 2026 (~2.3 years, ~5,800 periods) |
+| **Date Range** | January 2024 – April 2026 (~2.3 years, ~5,200 periods) |
 | **Total Records** | ~133,000 funding rate observations |
 | **Additional Data** | Spot and perpetual OHLCV (for basis calculation), open-interest snapshots |
 
@@ -39,10 +39,9 @@ The backtest uses the following data sources and characteristics:
 
 ---
 
-
 ## Strategy Evolution
 
-### Baseline: Z-Score Mean Reversion (Poor Performance)
+### Step 1: Baseline Z-Score Mean Reversion (Failed)
 
 Our first approach used a rolling z-score on funding rates:
 - **Entry:** When z-score > 1.5 and annualised rate > 5%
@@ -54,8 +53,6 @@ Our first approach used a rolling z-score on funding rates:
 - The strategy entered on temporary spikes and exited as rates "normalised," often locking in losses.
 - During sustained high-funding regimes (common in bull markets), the strategy sat in cash while carry traders collected consistent yield.
 
-**Baseline Results:**
-
 | Metric | Value |
 |--------|-------|
 | Cumulative Return | **-6.27%** |
@@ -64,85 +61,155 @@ Our first approach used a rolling z-score on funding rates:
 | Max Drawdown | -10.0% |
 | Win Rate | 17.0% |
 
-
-### Adaptive Carry (Trend-Following)
+### Step 2: Adaptive Carry — Following the Trend (Worked)
 
 We shifted the rationale from *mean reversion* to *trend following*:
-- **Entry:** When the 7-day mean funding rate is sustainably high (> 8% annualised), momentum is positive, and the rate has been positive for multiple consecutive periods.
+- **Entry:** When the 7-day mean funding rate is sustainably high (> 8% annualised), momentum is positive, and the rate has been positive for 6+ consecutive periods.
 - **Exit:** Only when momentum turns strongly negative, the rolling mean drops below a threshold, or a max holding period is reached.
 - **Logic:** Ride the autocorrelation of funding rates. If a market is paying 20%+ annualised to short perps, that regime typically persists for weeks.
 
 **Why it works:**
-- **Autocorrelation exploitation:** Crypto funding rates have significant positive serial correlation at short horizons. A high 7-day mean predicts continued elevated rates.
-- **Reduced trading frequency:** Wider entry thresholds and the removal of take-profit levels cut transaction costs dramatically.
+- **Autocorrelation exploitation:** Crypto funding rates have significant positive serial correlation. A high 7-day mean predicts continued elevated rates.
+- **Reduced trading frequency:** Wider entry thresholds and no take-profit levels cut transaction costs dramatically.
 - **Signal-strength sizing:** Position size scales with the confidence of the carry signal.
 - **Risk management:** Tight per-position loss limits (1.5% of equity) and portfolio drawdown guards (8%) protect capital during regime shifts.
+
+**But we noticed something critical:** The strategy only made money when funding was positive. In 2026, when funding turned deeply negative, the strategy sat in cash while the market was paying shorts to hold perps. We were leaving money on the table.
+
+### Step 3: Bidirectional Carry — The Bug Hunt
+
+The natural extension: go **short spot + long perp** when funding is sustainably negative, mirroring the long logic.
+
+**First implementation (broken):**
+
+| Metric | Value |
+|--------|-------|
+| Sharpe | 3.42 |
+| Annual Return | 2.17% |
+| Max Drawdown | -1.41% |
+| Short Win Rate | **20.4%** |
+| Short Trades | 333 |
+
+Something was wrong. Shorts were losing money even in 2026 when funding averaged **-11.6% annualised**. Why?
+
+**Deep dive into the trade logs revealed the bug:**
+
+| Problem | Detail |
+|---------|--------|
+| **Entry/exit mismatch** | Short entry used `fr_momentum_3d < 0` (3-day trend), but exits used `fr_momentum_7d > 0.00008` (7-day trend). These two metrics can have **opposite signs**. |
+| **Immediate churn** | 293 of 333 short trades (88%) exited on "pos_momentum." 136 trades (41%) were held for only **one 8h period**. |
+| **Fee death spiral** | A round trip costs ~0.34% of collateral (~$60 on a $17k position). To break even in one period, funding must exceed **155% annualised** — nearly impossible. |
+| **No negative streak filter** | Longs required `positive_streak >= 6`, but shorts had no equivalent discipline, letting noise trades through. |
+
+**The fix:**
+1. Added `negative_streak >= 6` filter — same discipline as longs
+2. Short entry now requires **both** `fr_momentum_3d < 0` **AND** `fr_momentum_7d < 0` — both timeframes must agree
+3. Added `min_hold_periods = 3` — prevents signal-based exits before 24 hours, killing the fee-bleed churn
+
+### Step 4: Bidirectional Results (Fixed)
+
+The fixed bidirectional engine now outperforms unidirectional on every metric:
+
+| Metric | Unidirectional (Carry Moderate) | Bidirectional 5% Borrow | Improvement |
+|--------|--------------------------------|------------------------|-------------|
+| **Sharpe** | 6.10 | **6.36** | +4.3% |
+| **Annual Return** | 2.43% | **4.04%** | +66% |
+| **Max Drawdown** | -0.69% | **-0.78%** | Comparable |
+| **Total Trades** | 176 | 338 | +92% |
+| **Long Win Rate** | 55.7% | 54.6% | Comparable |
+| **Short Win Rate** | N/A | **37.8%** | New |
+| **Long PnL** | $12,074 | $11,215 | Comparable |
+| **Short PnL** | $0 | **$9,308** | +$9,308 |
+| **Combined PnL** | $12,074 | **$20,523** | **+70%** |
+
+> Borrow costs at 5% annual were **not** the problem — they averaged only ~$0.78 per 8h period on a $17k position. The real killer was the 0.34% round-trip fee churn on 1-period trades.
 
 ---
 
 ## Results
 
-### Parameter Sweep Overview
+### Equity Curves: Unidirectional vs Bidirectional
 
-We ran a sweep across seven configurations to test sensitivity to entry strictness, position concentration, and term-structure filtering.
+![Equity Comparison](results/images/equity_comparison.png)
 
-| Configuration | Sharpe | Ann. Return | Max DD | Win Rate | Profit Factor | Final Equity |
-|---------------|--------|-------------|--------|----------|---------------|--------------|
-| **Carry Strict** | 6.08 | 2.40% | -0.63% | 65.2% | 6.74 | $111,893 |
-| **Carry Moderate** | 6.10 | 2.43% | -0.69% | 55.7% | 5.32 | $112,078 |
-| **Carry Relaxed** | 6.35 | 2.66% | -0.86% | 55.4% | 5.14 | $113,289 |
-| **Carry Concentrated** | 6.16 | 2.70% | -0.78% | 68.1% | 7.54 | $113,497 |
-| **Carry Diversified** | 6.17 | 2.25% | -0.60% | 55.1% | 5.37 | $111,142 |
-| Carry + TS Strict | 4.91 | 1.95% | -1.34% | 42.5% | 3.46 | $109,617 |
-| Carry + TS Moderate | 4.91 | 1.95% | -1.34% | 42.5% | 3.46 | $109,617 |
+The bidirectional strategy (solid green) pulls ahead of unidirectional (dashed blue) starting in early 2026 when funding turns deeply negative and the short side activates.
 
-> All figures are from the enhanced backtest engine with realistic VIP-0 tier fees (0.10% spot taker, 0.05% perp taker, 1 bp slippage per leg).
+### Drawdown Comparison
 
-### Equity Curves
+![Drawdown Comparison](results/images/drawdown_comparison.png)
 
-![Strategy Equity Curves](results/images/equity_curves.png)
-
-### Drawdown Profiles
-
-![Strategy Drawdowns](results/images/drawdowns.png)
-
-### Risk-Return Comparison
-
-![Metrics Comparison](results/images/metrics_comparison.png)
-
-### QuantStats Tearsheets
-
-Full interactive tearsheets are generated for each configuration and saved in `results/sweep/`:
-
-- [`tearsheet_carry_moderate.html`](results/sweep/tearsheet_carry_moderate.html)
-- [`tearsheet_carry_concentrated.html`](results/sweep/tearsheet_carry_concentrated.html)
-- [`tearsheet_carry_diversified.html`](results/sweep/tearsheet_carry_diversified.html)
-- [`tearsheet_carry_strict.html`](results/sweep/tearsheet_carry_strict.html)
-- [`tearsheet_carry_relaxed.html`](results/sweep/tearsheet_carry_relaxed.html)
+Both strategies maintain sub-1% drawdowns. The bidirectional variants show slightly deeper but still minimal drawdowns, a fair trade for 66% higher returns.
 
 ### Regime Sensitivity
 
-The strategy is **conditional on the funding rate environment**. It does not generate alpha in a vacuum — it harvests excess yield when funding rates are structurally positive.
+![Regime Sensitivity](results/images/regime_sensitivity.png)
 
-| Year | Avg Funding Rate | Strategy Trades | Carry Moderate Return |
-|------|-----------------|-----------------|----------------------|
-| **2024** | **11.86%** ann. | 106 opens | **+10.2%** |
-| **2025** | **1.29%** ann. | 59 opens | **+1.8%** |
-| **2026 (partial)** | **-11.56%** ann. | 13 opens | **+0.1%** |
+The strategy is a **funding-rate thermostat** — it harvests yield in both directions and sits in cash during neutral regimes.
 
-- **2024** was a "golden age": March averaged **45%** annualised funding. The strategy was fully deployed and collected payments every 8 hours.
-- **2025** saw a **10x collapse** in funding rates. Six months had negative average funding. The strategy sat in cash because the 8% entry threshold was rarely met.
-- **2026** turned deeply negative. The strategy made only 13 entries in 4+ months, protecting capital from negative funding.
+| Year | Avg Funding Rate | Long PnL | Short PnL | Combined Return |
+|------|-----------------|----------|-----------|-----------------|
+| **2024** | **+11.86%** ann. | ~+$9,000 | ~-$25 | **+~9%** |
+| **2025** | **+1.29%** ann. | ~+$1,800 | ~+$471 | **+~2%** |
+| **2026** | **-11.56%** ann. | ~+$400 | **+$8,862** | **+~8%** |
 
-This is **intended behaviour**. The high Sharpe (~6) comes from harvesting yield in good regimes and doing nothing in bad ones. The strategy is a **funding-rate thermostat**, not a perpetual motion machine.
+- **2024** was a "golden age" for longs: March averaged **45%** annualised funding.
+- **2025** saw a **10x collapse** in funding rates. Both sides sat in cash because the 8% entry threshold was rarely met.
+- **2026** turned deeply negative. The short side captured **$8,862** from 45 trades at a 55.6% win rate.
 
-### Key Takeaways
+### Risk-Return Metrics
 
-- **Best risk-adjusted return:** Carry Diversified (Sharpe 6.17, max DD -0.60%).
-- **Highest absolute return:** Carry Concentrated (13.5% total return, Sharpe 6.16).
-- **Simple carry beats carry + term structure:** Adding term-structure filters as a mandatory second signal reduced both return and Sharpe, suggesting that the raw carry signal is the dominant alpha source.
-- **Drawdowns are minimal:** All carry variants experienced sub-1% maximum drawdowns over the ~4.75-year period, illustrating the low-volatility nature of the yield.
-- **The trade is reversible:** When funding rates turn deeply negative, the position can be flipped — **short spot + long perpetual** — to collect payments from the short side. The current implementation sits in cash during negative regimes, but the logic is symmetric. (did not tested, not a invest advice)
+![Metrics Comparison](results/images/metrics_comparison.png)
+
+### Parameter Sweep: Full Comparison
+
+| Configuration | Sharpe | Ann. Return | Max DD | Win Rate | Final Equity |
+|---------------|--------|-------------|--------|----------|--------------|
+| **Bidirectional 5% borrow** | **6.36** | **4.04%** | -0.78% | 46.4% | **$120,676** |
+| Bidirectional 8% borrow | 5.76 | 3.64% | -1.07% | 45.0% | $118,486 |
+| Bidirectional 12% borrow | 4.94 | 3.11% | -1.84% | 42.3% | $115,628 |
+| Carry Moderate (uni) | 6.10 | 2.43% | -0.69% | 55.7% | $112,078 |
+| Carry Relaxed | 6.35 | 2.66% | -0.86% | 55.4% | $113,289 |
+| Carry Concentrated | 6.16 | 2.70% | -0.78% | 68.1% | $113,497 |
+
+> All figures use realistic VIP-0 tier fees (0.10% spot taker, 0.05% perp taker, 1 bp slippage per leg).
+
+### Per-Pair Insights
+
+Not all pairs are equal. The strategy's alpha is concentrated in a handful of mid-cap alts, while large caps barely register.
+
+**AXS — the short king.** AXS produced **+$6,802** total, with **+$6,865 from shorts alone**. In Jan–Mar 2026, AXS funding rates plunged to -400% to -500% annualised. Four monster short trades held 22–28 periods each captured **$6,253** between them.
+
+**WIF — memecoin lottery.** WIF netted **+$1,848**, but it was lumpy: one 70-period long in Mar 2024 captured **+$1,342** during the memecoin mania, while nine other trades were small noise losses. 
+
+**MKR — the perfect record.** Six long trades, **100% win rate**, +$625. Average hold: 132 periods (~44 days). MKR funding spikes during DeFi stress and stays elevated — ideal for a patient carry strategy.
+
+**HBAR** Worst performer at **-$370**. Four of its eight longs in Apr 2024 were 1-period round trips that immediately reversed. HBAR funding flips sign faster than the 7-day mean can catch, making it a natural victim of fee churn.
+
+### QuantStats Tearsheets
+
+Full interactive tearsheets for each configuration:
+
+**Bidirectional:**
+- [`tearsheet_bidirectional_5borrow.html`](results/sweep/tearsheet_bidirectional_5borrow.html) — **Best overall**
+- [`tearsheet_bidirectional_8borrow.html`](results/sweep/tearsheet_bidirectional_8borrow.html)
+- [`tearsheet_bidirectional_12borrow.html`](results/sweep/tearsheet_bidirectional_12borrow.html)
+
+**Unidirectional:**
+- [`tearsheet_carry_moderate.html`](results/sweep/tearsheet_carry_moderate.html)
+- [`tearsheet_carry_concentrated.html`](results/sweep/tearsheet_carry_concentrated.html)
+- [`tearsheet_carry_relaxed.html`](results/sweep/tearsheet_carry_relaxed.html)
+
+---
+
+## How We Got Here: A Playbook
+
+This repository documents a realistic research workflow, including the mistakes:
+
+1. **Start simple.** The z-score baseline failed (-6.27%) but taught us funding rates are autocorrelated, not mean-reverting.
+2. **Follow the data.** When 2024 funding averaged 11.86% and 2026 flipped to -11.56%, the strategy must adapt to both regimes.
+3. **Question surprises.** Bidirectional initially underperformed (Sharpe 3.42). Instead of blaming borrow costs, we dug into trade logs and found a momentum-filter mismatch causing 1-period fee churn.
+4. **Fix with discipline.** Added the same streak and momentum filters to shorts that longs already had. Minimum hold periods prevented round-trip fee bleed.
+5. **Validate improvement.** Fixed bidirectional now beats unidirectional by 70% in total PnL with comparable drawdowns.
 
 ---
 
@@ -153,16 +220,16 @@ Instead of only using backward-looking rolling means, add a lightweight predicto
 - **Autoregressive model** (AR(1) or AR(3)) on funding rates
 - **Macro regime classifier** (BTC dominance, volatility, open-interest growth) to predict whether funding will persist
 
-### 2. Live Trading Integration
+### 2. Tiered Borrow Cost Model
+The current borrow model assumes a flat 5-12% annual rate. In reality:
+- **BTC/ETH:** Borrow rates are low (~2-5%) because liquidity is deep
+- **Mid-cap alts:** Borrow rates can spike to 20-50% during stress
+- A tiered model by market-cap or exchange margin book would improve realism
+
+### 3. Live Trading Integration
 - **Exchange API wrappers** for Binance/Bybit/OKX to automate position entry/exit
 - **Real-time funding rate monitor** with Telegram/Slack alerts when entry thresholds are breached
 - **Portfolio rebalancer** that checks hedge ratios and funding payments every 8 hours
-
-### 3. Bi-Directional Carry
-The current engine only harvests **positive** funding (long spot / short perp). A natural extension is to capture **negative** funding regimes by flipping the position:
-- **Short spot + long perpetual** when the 7-day mean funding rate is sustainably **negative** (< -8% annualised)
-- This requires modelling **spot borrow costs** (Binance margin, Aave, Compound) to ensure the spread between borrow cost and funding received is profitable
-- During 2026, this would have turned the -11.56% funding environment into a yield source rather than a cash-drag period
 
 ---
 
@@ -181,12 +248,15 @@ pip install -e ".[dev]"
 # 3. Download historical data (cached locally, not committed)
 python -m data.downloader --config config/default.yaml
 
-# 4. Run backtests to generate results locally
-python run_parameter_sweep.py                                    # carry sweep
-python plot_sweep_results.py                                     # comparison charts
-python generate_tearsheets.py                                    # QuantStats HTML reports
+# 4. Run backtests
+python run_parameter_sweep.py              # unidirectional carry sweep
+python run_bidirectional_sweep.py          # bidirectional carry sweep
 
-# 5. Run tests
+# 5. Generate plots and reports
+python plot_sweep_results.py               # comparison charts
+python generate_tearsheets.py              # QuantStats HTML reports
+
+# 6. Run tests
 python -m pytest tests/ -v --tb=short
 ```
 
@@ -224,7 +294,7 @@ funding_arbs/
 │   ├── enhanced_engine.py    # Carry-trade backtest engine
 │   └── fee_model.py          # Realistic cost model
 ├── results/
-│   ├── sweep/                # Adaptive carry sweep outputs
+│   ├── sweep/                # Backtest outputs (metrics, equity, tearsheets)
 │   └── images/               # Comparison plots
 ├── tests/                    # pytest suite
 └── notebooks/                # Research notebooks

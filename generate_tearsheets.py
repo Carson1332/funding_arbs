@@ -11,7 +11,7 @@ def generate_tearsheets():
     sweep_dir = Path("results/sweep")
     output_dir = sweep_dir
 
-    files = sorted(sweep_dir.glob("equity_carry_*.csv"))
+    files = sorted(sweep_dir.glob("equity_*.csv"))
     for f in files:
         name = f.stem.replace("equity_", "")
         df = pd.read_csv(f)

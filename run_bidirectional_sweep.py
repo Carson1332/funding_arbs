@@ -56,6 +56,7 @@ class BidirectionalConfig:
     neg_exit_ann_rate: float = -0.02
     neg_exit_momentum_threshold: float = 0.00008
     neg_max_hold_periods: int = 180
+    neg_min_hold_periods: int = 3  # minimum periods before signal exit
 
 
 @dataclass
@@ -257,13 +258,17 @@ class BidirectionalBacktest:
                 ann_7d = r["fr_mean_7d"] * 3 * 365 if pd.notna(r.get("fr_mean_7d")) else None
                 mom_7d = r["fr_momentum_7d"] if pd.notna(r.get("fr_momentum_7d")) else None
 
-                if ann_7d is not None and ann_7d > self.config.neg_exit_ann_rate:
-                    self._close(ts, key, "low_rate")
-                    continue
+                # Minimum hold period to avoid round-trip fee bleed on noise
+                if pos.periods_held < self.config.neg_min_hold_periods:
+                    pass  # skip signal exits, but max_hold still checked below
+                else:
+                    if ann_7d is not None and ann_7d > self.config.neg_exit_ann_rate:
+                        self._close(ts, key, "low_rate")
+                        continue
 
-                if mom_7d is not None and mom_7d > self.config.neg_exit_momentum_threshold:
-                    self._close(ts, key, "pos_momentum")
-                    continue
+                    if mom_7d is not None and mom_7d > self.config.neg_exit_momentum_threshold:
+                        self._close(ts, key, "pos_momentum")
+                        continue
 
                 if pos.periods_held > self.config.neg_max_hold_periods:
                     self._close(ts, key, "max_hold")
@@ -336,21 +341,33 @@ class BidirectionalBacktest:
     def _qualifies_short_entry(self, r) -> bool:
         if self.config.neg_min_ann_rate > 0:
             return False  # short entries disabled
-        if pd.isna(r.get("fr_mean_7d")) or pd.isna(r.get("fr_momentum_3d")):
+        if (
+            pd.isna(r.get("fr_mean_7d"))
+            or pd.isna(r.get("fr_momentum_3d"))
+            or pd.isna(r.get("fr_momentum_7d"))
+        ):
             return False
         ann_7d = r["fr_mean_7d"] * 3 * 365
         if ann_7d > self.config.neg_min_ann_rate:
             return False
+        # Both short-term and medium-term momentum must be negative
         if r["fr_momentum_3d"] > 0:
+            return False
+        if r["fr_momentum_7d"] > 0:
+            return False
+        # Require sustained negative funding (same discipline as longs)
+        streak = r.get("negative_streak")
+        if pd.notna(streak) and streak < self.config.neg_min_negative_streak:
             return False
         return True
 
     def _score_short_entry(self, r):
         ann_7d = r["fr_mean_7d"] * 3 * 365
         strength = min(abs(ann_7d) / 0.20, 1.0)
-        if r["fr_momentum_3d"] < -0.00005:
+        # Reward stronger negative momentum on both timeframes
+        if r["fr_momentum_3d"] < -0.00005 and r["fr_momentum_7d"] < -0.00005:
             strength *= 1.2
-        score = abs(ann_7d) + abs(r["fr_momentum_3d"]) * 3000
+        score = abs(ann_7d) + abs(r["fr_momentum_7d"]) * 3000
         return score, strength
 
     def run_bidirectional_carry(self, df: pd.DataFrame) -> PortfolioState:

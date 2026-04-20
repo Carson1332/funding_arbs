@@ -100,6 +100,13 @@ def compute_funding_features(df: pd.DataFrame) -> pd.DataFrame:
         ).cumsum()
         g["positive_streak"] = streaks * g["is_positive"]
 
+        # Negative streak (mirror of positive streak)
+        g["is_negative"] = (fr < 0).astype(int)
+        neg_streaks = g["is_negative"].groupby(
+            (g["is_negative"] != g["is_negative"].shift()).cumsum()
+        ).cumsum()
+        g["negative_streak"] = neg_streaks * g["is_negative"]
+
         # Volatility ratio
         g["fr_vol_7d"] = fr.rolling(21, min_periods=7).std()
         g["fr_vol_30d"] = fr.rolling(90, min_periods=30).std()
