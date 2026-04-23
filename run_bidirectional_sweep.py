@@ -14,14 +14,39 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 
 from backtest.enhanced_engine import (
     compute_funding_features,
     load_all_funding_data,
 )
+
+
+def _load_fee_scenarios(path: str = "config/fees.yaml") -> dict[str, dict[str, Any]]:
+    """Load fee scenarios from YAML. Returns dict keyed by scenario name."""
+    p = Path(path)
+    if not p.exists():
+        return {
+            "default": {
+                "spot_taker_fee": 0.0010,
+                "perp_taker_fee": 0.0005,
+                "slippage_bps": 1.0,
+            }
+        }
+    with open(p) as f:
+        data = yaml.safe_load(f)
+    return {
+        name: {
+            "spot_taker_fee": cfg.get("spot_taker_fee", 0.0010),
+            "perp_taker_fee": cfg.get("perp_taker_fee", 0.0005),
+            "slippage_bps": cfg.get("slippage_bps", 1.0),
+        }
+        for name, cfg in data.get("fee_scenarios", {}).items()
+    }
 
 
 @dataclass
@@ -39,6 +64,9 @@ class BidirectionalConfig:
 
     # Borrow cost for shorting spot (annualised)
     borrow_cost_annual: float = 0.08  # 8% per year to borrow spot
+
+    # Opportunity cost on locked collateral
+    stablecoin_yield: float = 0.04  # annual yield on stablecoins
 
     # Strategy-specific
     strategy: str = "bidirectional_carry"
@@ -68,18 +96,45 @@ class CarryPosition:
     entry_cost: float
     funding_collected: float = 0.0
     borrow_paid: float = 0.0
+    basis_pnl: float = 0.0
     periods_held: int = 0
     peak_pnl: float = 0.0
     signal_strength: float = 1.0
     direction: str = "long"  # "long" = long spot / short perp; "short" = short spot / long perp
 
+    # Price tracking for basis MtM
+    entry_spot_price: float = 0.0
+    entry_perp_price: float = 0.0
+    last_spot_price: float = 0.0
+    last_perp_price: float = 0.0
+
+    @property
+    def quantity(self) -> float:
+        return self.collateral / self.entry_perp_price if self.entry_perp_price > 0 else 0.0
+
     @property
     def net_pnl(self) -> float:
-        return self.funding_collected - self.borrow_paid - self.entry_cost
+        return self.funding_collected + self.basis_pnl - self.borrow_paid - self.entry_cost
 
     @property
     def return_on_collateral(self) -> float:
         return self.net_pnl / self.collateral if self.collateral > 0 else 0
+
+    def update_basis_mtm(self, spot_price: float, perp_price: float) -> float:
+        """Compute and add period basis MtM. Returns period PnL."""
+        if self.last_spot_price <= 0 or self.last_perp_price <= 0:
+            self.last_spot_price = spot_price
+            self.last_perp_price = perp_price
+            return 0.0
+        q = self.quantity
+        if self.direction == "long":
+            period_pnl = q * ((spot_price - self.last_spot_price) - (perp_price - self.last_perp_price))
+        else:
+            period_pnl = q * (-(spot_price - self.last_spot_price) + (perp_price - self.last_perp_price))
+        self.basis_pnl += period_pnl
+        self.last_spot_price = spot_price
+        self.last_perp_price = perp_price
+        return period_pnl
 
 
 @dataclass
@@ -141,7 +196,8 @@ class BidirectionalBacktest:
             and self.state.available_capital > self.state.equity * 0.05
         )
 
-    def _open(self, ts, symbol, exchange, rate, signal_strength, direction):
+    def _open(self, ts, symbol, exchange, rate, signal_strength, direction,
+              spot_price: float = 0.0, perp_price: float = 0.0):
         collateral = self._position_size(signal_strength)
         if collateral < 100:
             return
@@ -155,6 +211,10 @@ class BidirectionalBacktest:
             entry_cost=cost,
             signal_strength=signal_strength,
             direction=direction,
+            entry_spot_price=spot_price,
+            entry_perp_price=perp_price,
+            last_spot_price=spot_price,
+            last_perp_price=perp_price,
         )
         self.state.trade_log.append({
             "timestamp": ts,
@@ -165,6 +225,8 @@ class BidirectionalBacktest:
             "entry_cost": cost,
             "funding_rate": rate,
             "signal_strength": signal_strength,
+            "spot_price": spot_price,
+            "perp_price": perp_price,
             "equity": self.state.equity,
         })
 
@@ -184,6 +246,7 @@ class BidirectionalBacktest:
             "collateral": pos.collateral,
             "funding_collected": pos.funding_collected,
             "borrow_paid": pos.borrow_paid,
+            "basis_pnl": pos.basis_pnl,
             "total_costs": pos.entry_cost + exit_cost,
             "net_pnl": realised,
             "periods_held": pos.periods_held,
@@ -192,8 +255,8 @@ class BidirectionalBacktest:
         })
         del self.state.positions[key]
 
-    def _collect_funding_and_borrow(self, snap):
-        """Collect funding payments and pay borrow costs for all positions."""
+    def _collect_period_pnl(self, snap):
+        """Collect funding, basis MtM, borrow cost and opportunity cost for all positions."""
         for key, pos in list(self.state.positions.items()):
             row = snap[snap["symbol"] == pos.symbol]
             if row.empty:
@@ -201,16 +264,28 @@ class BidirectionalBacktest:
             rate = row.iloc[0]["funding_rate"]
 
             if pos.direction == "long":
-                # Long spot / short perp: receive funding when rate > 0, pay when < 0
                 pos.funding_collected += pos.collateral * rate
             else:
-                # Short spot / long perp: receive funding when rate < 0, pay when > 0
                 pos.funding_collected += pos.collateral * (-rate)
 
-            # Borrow cost for short spot (only for short direction)
+            # Borrow cost for short spot
             if pos.direction == "short":
                 borrow_per_period = self.config.borrow_cost_annual / 1095
                 pos.borrow_paid += pos.collateral * borrow_per_period
+
+            # Basis mark-to-market
+            r = row.iloc[0]
+            for col_spot, col_perp in [("spot_close", "perp_close")]:
+                if col_spot in r.index and col_perp in r.index:
+                    sp = r[col_spot]
+                    pp = r[col_perp]
+                    if pd.notna(sp) and pd.notna(pp) and sp > 0 and pp > 0:
+                        pos.update_basis_mtm(float(sp), float(pp))
+
+            # Opportunity cost on locked collateral
+            if self.config.stablecoin_yield > 0:
+                opp_cost = pos.collateral * (self.config.stablecoin_yield / 1095)
+                pos.funding_collected -= opp_cost
 
             pos.periods_held += 1
             pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
@@ -306,14 +381,20 @@ class BidirectionalBacktest:
         for sym, r, score, strength in candidates_long:
             if not self._can_open():
                 break
-            self._open(ts, sym, "binance", r["funding_rate"], strength, "long")
+            spot_price = r.get("spot_close", 0.0)
+            perp_price = r.get("perp_close", 0.0)
+            self._open(ts, sym, "binance", r["funding_rate"], strength, "long",
+                       spot_price=spot_price, perp_price=perp_price)
 
         # Open short positions
         candidates_short.sort(key=lambda x: x[2], reverse=True)
         for sym, r, score, strength in candidates_short:
             if not self._can_open():
                 break
-            self._open(ts, sym, "binance", r["funding_rate"], strength, "short")
+            spot_price = r.get("spot_close", 0.0)
+            perp_price = r.get("perp_close", 0.0)
+            self._open(ts, sym, "binance", r["funding_rate"], strength, "short",
+                       spot_price=spot_price, perp_price=perp_price)
 
     def _qualifies_long_entry(self, r) -> bool:
         if pd.isna(r.get("fr_mean_7d")) or pd.isna(r.get("fr_momentum_3d")):
@@ -384,8 +465,8 @@ class BidirectionalBacktest:
         for i, ts in enumerate(timestamps):
             snap = binance[binance["timestamp"] == ts]
 
-            # 1. Collect funding and borrow costs
-            self._collect_funding_and_borrow(snap)
+            # 1. Collect funding, basis MtM, borrow and opportunity costs
+            self._collect_period_pnl(snap)
 
             # 2. Portfolio risk
             if self._check_risk_and_exit(ts, snap):
@@ -541,41 +622,46 @@ def run_bidirectional_sweep():
          "borrow_cost_annual": 0.05},
     ]
 
+    fee_scenarios = _load_fee_scenarios()
     all_results = {}
     out_dir = Path("results/sweep")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for cfg_dict in configs:
         name = cfg_dict.pop("name")
-        print(f"\n--- {name} ---")
 
-        config = BidirectionalConfig(**cfg_dict)
-        bt = BidirectionalBacktest(config)
-        start = time.time()
-        state = bt.run(df)
-        elapsed = time.time() - start
+        for fee_name, fee_vals in fee_scenarios.items():
+            run_name = f"{name}_{fee_name}" if len(fee_scenarios) > 1 else name
+            print(f"\n--- {run_name} ---")
 
-        metrics = compute_metrics(state)
-        all_results[name] = metrics
+            merged_cfg = {**cfg_dict, **fee_vals}
+            config = BidirectionalConfig(**merged_cfg)
+            bt = BidirectionalBacktest(config)
+            start = time.time()
+            state = bt.run(df)
+            elapsed = time.time() - start
 
-        # Save equity curve
-        eq_df = pd.DataFrame(state.equity_history)
-        eq_df.to_csv(out_dir / f"equity_{name}.csv", index=False)
+            metrics = compute_metrics(state)
+            all_results[run_name] = metrics
 
-        # Save trades
-        if state.trade_log:
-            pd.DataFrame(state.trade_log).to_csv(out_dir / f"trades_{name}.csv", index=False)
+            # Save equity curve
+            eq_df = pd.DataFrame(state.equity_history)
+            eq_df.to_csv(out_dir / f"equity_{run_name}.csv", index=False)
 
-        print(
-            f"  Time: {elapsed:.1f}s | Sharpe: {metrics.get('sharpe')} | "
-            f"Return: {metrics.get('annual_return_pct')}% | "
-            f"MaxDD: {metrics.get('max_drawdown_pct')}% | "
-            f"WinRate: {metrics.get('win_rate_pct')}% | "
-            f"Trades: {metrics.get('total_trades')} | "
-            f"Long: {metrics.get('long_trades')} | "
-            f"Short: {metrics.get('short_trades')} | "
-            f"Final: ${metrics.get('final_equity', 0):,.0f}"
-        )
+            # Save trades
+            if state.trade_log:
+                pd.DataFrame(state.trade_log).to_csv(out_dir / f"trades_{run_name}.csv", index=False)
+
+            print(
+                f"  Time: {elapsed:.1f}s | Sharpe: {metrics.get('sharpe')} | "
+                f"Return: {metrics.get('annual_return_pct')}% | "
+                f"MaxDD: {metrics.get('max_drawdown_pct')}% | "
+                f"WinRate: {metrics.get('win_rate_pct')}% | "
+                f"Trades: {metrics.get('total_trades')} | "
+                f"Long: {metrics.get('long_trades')} | "
+                f"Short: {metrics.get('short_trades')} | "
+                f"Final: ${metrics.get('final_equity', 0):,.0f}"
+            )
 
     # Summary
     print(f"\n{'='*70}")

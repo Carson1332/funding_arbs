@@ -264,5 +264,40 @@ def main():
     print(f"\nTotal basis records: {len(df)}")
 
 
+def load_all_basis_data() -> pd.DataFrame:
+    """Load and compute spot-perp basis for all cached OHLCV pairs.
+
+    Returns DataFrame with columns:
+        timestamp, symbol, exchange, spot_close, perp_close, basis, basis_bps
+    """
+    cache_dir = Path(__file__).resolve().parent / "cache" / "ohlcv"
+    if not cache_dir.exists():
+        return pd.DataFrame()
+
+    files = list(cache_dir.glob("*.parquet"))
+    spot_files = [f for f in files if f.stem.endswith("_spot")]
+
+    downloader = OHLCVDownloader({})
+    basis_frames: list[pd.DataFrame] = []
+
+    for spot_f in spot_files:
+        perp_name = spot_f.stem.replace("_spot", "_perp") + ".parquet"
+        perp_f = spot_f.with_name(perp_name)
+        if not perp_f.exists():
+            continue
+        try:
+            spot_df = pd.read_parquet(spot_f)
+            perp_df = pd.read_parquet(perp_f)
+            basis = downloader.compute_basis(spot_df, perp_df)
+            if len(basis) > 0:
+                basis_frames.append(basis)
+        except Exception:
+            continue
+
+    if not basis_frames:
+        return pd.DataFrame()
+    return pd.concat(basis_frames, ignore_index=True)
+
+
 if __name__ == "__main__":
     main()

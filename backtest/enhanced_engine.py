@@ -37,8 +37,19 @@ import pandas as pd
 # DATA LOADING
 # ============================================================================
 
-def load_all_funding_data() -> pd.DataFrame:
-    """Load all cached funding rate parquet files."""
+def load_all_funding_data(merge_prices: bool = True) -> pd.DataFrame:
+    """Load all cached funding rate parquet files.
+
+    Optionally merges spot/perp close prices for basis MtM if OHLCV cache exists.
+
+    Data alignment fixes applied:
+    1. Floor all timestamps to the nearest second to eliminate sub-second jitter
+       from exchange APIs (e.g. Binance returns 00:00:00.001 instead of 00:00:00).
+    2. For native 8h symbols, snap to canonical hours [0, 8, 16] via floor.
+    3. For sub-8h symbols (1h/4h), aggregate into 8h buckets with
+       closed='left', label='left' so that bucket [00:00, 08:00) -> 00:00,
+       preserving total funding income and aligning with the canonical grid.
+    """
     cache_dir = Path(__file__).resolve().parent.parent / "data" / "cache" / "funding_rates"
     frames = []
     for f in cache_dir.glob("*.parquet"):
@@ -51,6 +62,67 @@ def load_all_funding_data() -> pd.DataFrame:
         raise RuntimeError("No funding rate data found in cache")
     combined = pd.concat(frames, ignore_index=True)
     combined["timestamp"] = pd.to_datetime(combined["timestamp"], utc=True)
+
+    # FIX 1: Floor to nearest second to remove sub-second API jitter.
+    # Exchange APIs (especially Binance) return timestamps with +/-1-10ms offsets
+    # (e.g. 00:00:00.001 instead of 00:00:00). Without flooring, two symbols
+    # with the "same" 8h timestamp appear as different timestamps, fragmenting
+    # the backtest's timestamp grid (3357 unique instead of ~2522).
+    combined["timestamp"] = combined["timestamp"].dt.floor("s")
+
+    # Standardise all symbols to 8h funding intervals.
+    # Some symbols (e.g. TIA, WIF, AXS) arrive with 1h/4h granularity from ccxt.
+    # We detect the native interval per (exchange, symbol) and aggregate
+    # fine-grained rates into 8h buckets so total funding income is conserved.
+    combined = combined.sort_values(["exchange", "symbol", "timestamp"])
+    combined = combined.drop_duplicates(subset=["exchange", "symbol", "timestamp"], keep="first")
+    combined["dt_hours"] = (
+        combined.groupby(["exchange", "symbol"])["timestamp"]
+        .diff().dt.total_seconds() / 3600
+    )
+
+    def _to_8h(g: pd.DataFrame, sym: str, exc: str) -> pd.DataFrame:
+        median_dt = g["dt_hours"].median()
+        if pd.isna(median_dt) or median_dt >= 7.5:
+            # Native 8h -- snap to canonical settlement hours.
+            return g[g["timestamp"].dt.hour.isin([0, 8, 16])]
+        # Fine-grained -> 8h bucket, funding_rate summed (linear in rate).
+        # closed='left', label='left': bucket [00:00, 08:00) labelled 00:00
+        # so output timestamps align with the canonical 0/8/16 grid.
+        g = g.set_index("timestamp")
+        agg = g.resample(
+            "8h", origin="start_day", closed="left", label="left"
+        ).agg({
+            "funding_rate": "sum",
+        }).dropna(subset=["funding_rate"]).reset_index()
+        agg["symbol"] = sym
+        agg["exchange"] = exc
+        return agg
+
+    _results: list[pd.DataFrame] = []
+    for (exc, sym), g in combined.groupby(["exchange", "symbol"]):
+        _results.append(_to_8h(g, sym, exc))
+    combined = pd.concat(_results, ignore_index=True) if _results else pd.DataFrame()
+
+    # Drop the helper column
+    if "dt_hours" in combined.columns:
+        combined = combined.drop(columns=["dt_hours"])
+
+    if merge_prices:
+        try:
+            from data.spot_prices import load_all_basis_data
+            basis_df = load_all_basis_data()
+            if not basis_df.empty:
+                basis_df["timestamp"] = pd.to_datetime(basis_df["timestamp"], utc=True)
+                basis_df["timestamp"] = basis_df["timestamp"].dt.floor("s")
+                combined = combined.merge(
+                    basis_df[["timestamp", "symbol", "exchange", "spot_close", "perp_close", "basis"]],
+                    on=["timestamp", "symbol", "exchange"],
+                    how="left",
+                )
+        except Exception:
+            pass
+
     combined = combined.sort_values(["symbol", "exchange", "timestamp"]).reset_index(drop=True)
     return combined
 
@@ -60,11 +132,18 @@ def load_all_funding_data() -> pd.DataFrame:
 # ============================================================================
 
 def compute_funding_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute rich feature set from raw funding rate data."""
+    """Compute rich feature set from raw funding rate data.
+
+    Uses lag-1 funding rate for all signal calculations to avoid look-ahead bias:
+    the signal at time t is based on the realised funding rate up to t-1,
+    so the decision to enter at t cannot exploit the (as-yet-unknown) rate at t.
+    """
     results = []
     for (sym, exc), g in df.groupby(["symbol", "exchange"]):
         g = g.copy().sort_values("timestamp")
-        fr = g["funding_rate"]
+        # Lagged rate for signals (t uses t-1 rate)
+        g["funding_rate_lag1"] = g["funding_rate"].shift(1)
+        fr = g["funding_rate_lag1"]
 
         # Rolling statistics
         for w, label in [(9, "3d"), (21, "7d"), (63, "21d"), (90, "30d")]:
@@ -175,7 +254,7 @@ class CarryPosition:
     A delta-neutral carry position.
 
     Capital is LOCKED as collateral, not spent.
-    P&L = cumulative funding payments - trading costs.
+    P&L = cumulative funding payments + basis mark-to-market - trading costs.
     """
     symbol: str
     exchange: str
@@ -183,8 +262,16 @@ class CarryPosition:
     collateral: float       # capital locked as collateral
     entry_cost: float       # one-time entry fee
     funding_collected: float = 0.0
+    basis_pnl: float = 0.0  # mark-to-market from spot-perp price drift
     periods_held: int = 0
     peak_pnl: float = 0.0
+
+    # Price tracking for basis MtM
+    entry_spot_price: float = 0.0
+    entry_perp_price: float = 0.0
+    last_spot_price: float = 0.0
+    last_perp_price: float = 0.0
+    direction: str = "long"  # "long" = long spot / short perp; "short" = short spot / long perp
 
     # For cross-exchange
     exchange_short: str = ""
@@ -192,14 +279,39 @@ class CarryPosition:
     is_cross_exchange: bool = False
 
     @property
+    def quantity(self) -> float:
+        """Notional quantity (base currency units)."""
+        return self.collateral / self.entry_perp_price if self.entry_perp_price > 0 else 0.0
+
+    @property
     def net_pnl(self) -> float:
-        """Net P&L = funding collected - entry cost."""
-        return self.funding_collected - self.entry_cost
+        """Net P&L = funding + basis MtM - entry cost."""
+        return self.funding_collected + self.basis_pnl - self.entry_cost
 
     @property
     def return_on_collateral(self) -> float:
         """Return as fraction of collateral."""
         return self.net_pnl / self.collateral if self.collateral > 0 else 0
+
+    def update_basis_mtm(self, spot_price: float, perp_price: float) -> float:
+        """Compute and add period basis MtM. Returns period PnL."""
+        if self.last_spot_price <= 0 or self.last_perp_price <= 0:
+            self.last_spot_price = spot_price
+            self.last_perp_price = perp_price
+            return 0.0
+
+        q = self.quantity
+        if self.direction == "long":
+            # long spot + short perp
+            period_pnl = q * ((spot_price - self.last_spot_price) - (perp_price - self.last_perp_price))
+        else:
+            # short spot + long perp
+            period_pnl = q * (-(spot_price - self.last_spot_price) + (perp_price - self.last_perp_price))
+
+        self.basis_pnl += period_pnl
+        self.last_spot_price = spot_price
+        self.last_perp_price = perp_price
+        return period_pnl
 
 
 @dataclass
@@ -278,7 +390,9 @@ class EnhancedBacktest:
                 self.state.available_capital > self.state.equity * 0.05)
 
     def _open_position(self, ts, symbol, exchange, rate,
-                       exchange_short="", exchange_long="", is_cross=False):
+                       exchange_short="", exchange_long="", is_cross=False,
+                       spot_price: float = 0.0, perp_price: float = 0.0,
+                       direction: str = "long"):
         """Open a carry position."""
         collateral = self._position_size()
         if collateral < 100:
@@ -297,6 +411,11 @@ class EnhancedBacktest:
             entry_time=ts,
             collateral=collateral,
             entry_cost=entry_cost,
+            entry_spot_price=spot_price,
+            entry_perp_price=perp_price,
+            last_spot_price=spot_price,
+            last_perp_price=perp_price,
+            direction=direction,
             exchange_short=exchange_short,
             exchange_long=exchange_long,
             is_cross_exchange=is_cross,
@@ -307,6 +426,8 @@ class EnhancedBacktest:
             "timestamp": ts, "symbol": symbol, "action": "OPEN",
             "exchange": exchange, "collateral": collateral,
             "entry_cost": entry_cost, "funding_rate": rate,
+            "spot_price": spot_price, "perp_price": perp_price,
+            "direction": direction,
             "equity": self.state.equity,
         })
 
@@ -662,20 +783,37 @@ class EnhancedBacktest:
     # ========================================================================
     # COMMON STEP FUNCTION
     # ========================================================================
+    def _collect_period_pnl(self, snap: pd.DataFrame, pos: CarryPosition, row: pd.Series) -> float:
+        """Collect funding and basis MtM for a single position."""
+        rate = row["funding_rate"]
+        if pos.direction == "long":
+            payment = pos.collateral * rate
+        else:
+            payment = pos.collateral * (-rate)
+        pos.funding_collected += payment
+
+        # Basis mark-to-market
+        spot_col = "spot_close"
+        perp_col = "perp_close"
+        if spot_col in row.index and perp_col in row.index:
+            spot_price = row[spot_col]
+            perp_price = row[perp_col]
+            if pd.notna(spot_price) and pd.notna(perp_price) and spot_price > 0 and perp_price > 0:
+                pos.update_basis_mtm(float(spot_price), float(perp_price))
+
+        pos.periods_held += 1
+        pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
+        return payment
+
     def _step_carry(self, ts, snap, step_idx, total_steps, entry_fn, exit_fn):
         """Common step for single-exchange carry strategies."""
 
-        # 1. Collect funding
+        # 1. Collect funding + basis MtM
         for key, pos in list(self.state.positions.items()):
             row = snap[snap["symbol"] == pos.symbol]
             if row.empty:
                 continue
-            rate = row.iloc[0]["funding_rate"]
-            # Short perp receives positive funding
-            payment = pos.collateral * rate
-            pos.funding_collected += payment
-            pos.periods_held += 1
-            pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
+            self._collect_period_pnl(snap, pos, row.iloc[0])
 
         # 2. Risk checks
         if self.state.drawdown > self.config.max_drawdown_exit:
@@ -714,7 +852,13 @@ class EnhancedBacktest:
             for sym, r, score in candidates:
                 if not self._can_open():
                     break
-                self._open_position(ts, sym, "binance", r["funding_rate"])
+                spot_price = r.get("spot_close", 0.0)
+                perp_price = r.get("perp_close", 0.0)
+                self._open_position(
+                    ts, sym, "binance", r["funding_rate"],
+                    spot_price=spot_price, perp_price=perp_price,
+                    direction="long",
+                )
 
         # 5. Record equity
         self.state.equity_history.append({

@@ -1,0 +1,21 @@
+# Fee scenarios for sensitivity analysis
+# Rates are expressed as decimals (e.g. 0.001 = 0.1%).
+
+fee_scenarios:
+  optimistic:
+    description: "VIP-5 tier / deep liquidity"
+    spot_taker_fee: 0.0004
+    perp_taker_fee: 0.0002
+    slippage_bps: 1.0
+
+  realistic:
+    description: "VIP-0 tier / average liquidity"
+    spot_taker_fee: 0.0010
+    perp_taker_fee: 0.0005
+    slippage_bps: 5.0
+
+  pessimistic:
+    description: "VIP-0 tier / low-cap altcoin / wide spreads"
+    spot_taker_fee: 0.0010
+    perp_taker_fee: 0.0005
+    slippage_bps: 15.0

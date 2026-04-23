@@ -40,4 +40,4 @@ The strategy employs several risk management mechanisms. A **portfolio-level dra
 
 ## Expected Performance Characteristics
 
-This strategy is designed to produce **low-volatility, positive-carry returns** — similar in character to a fixed-income strategy rather than a directional equity strategy. The expected Sharpe ratio is in the range of 2.0 to 4.0, with annualised returns of 10 to 25% and maximum drawdowns under 5%. The primary risk is a sudden, sustained shift to negative funding rates, which would cause the strategy to pay rather than collect funding.
+This strategy is designed to produce **low-volatility, positive-carry returns** — similar in character to a fixed-income strategy rather than a directional equity strategy. Under realistic fee assumptions (50 bps round-trip + 4% opportunity cost), the expected Sharpe ratio is in the range of 0.5 to 2.0, with annualised returns of 0.5% to 2.0% and maximum drawdowns under 5%. The strategy is highly sensitive to execution costs and path-dependent liquidation spirals. The primary risk is a sudden, sustained shift to negative funding rates, which would cause the strategy to pay rather than collect funding.

@@ -36,6 +36,8 @@ All downloaded data is cached as Parquet files in `data/cache/`. This directory 
 Subsequent runs only fetch new data since the last cached timestamp, avoiding
 redundant API calls.
 
+> **Note on Data Alignment:** The data loader implements strict timestamp flooring (`dt.floor("s")`) and explicit resample alignment (`closed="left", label="left"`) to prevent sub-second API jitter from fragmenting the backtest grid.
+
 ## Data Sources
 
 - **ccxt** (free): Funding rates, OHLCV via exchange public APIs

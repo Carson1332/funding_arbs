@@ -31,9 +31,9 @@ The **FundingZScore** class computes rolling z-scores and generates entry/exit s
 
 The backtest engine replays historical 8-hour funding snapshots chronologically. At each timestep, it performs the following operations in order: collect funding payments on existing positions, adjust hedge ratios if drift exceeds the threshold, check risk limits (drawdown, per-position loss), process entry/exit signals, mark positions to market, and record the equity snapshot.
 
-The **FeeModel** class models all trading costs including spot and perpetual maker/taker fees, slippage, and funding payments. Fee schedules are pre-configured for Binance, Bybit, and OKX at VIP-0 tier rates.
+The **FeeModel** class models all trading costs including spot and perpetual maker/taker fees, slippage, and funding payments. Fee schedules are pre-configured for Binance, Bybit, and OKX at VIP-0 tier rates (e.g., 50 bps round-trip for Realistic). It also deducts a 4% annual opportunity cost on deployed collateral.
 
-The **PortfolioState** class tracks all positions, cash, equity history, and trade log. It enforces position limits and computes real-time drawdown.
+The **PortfolioState** class tracks all positions, cash, equity history, and trade log. It enforces position limits and computes real-time drawdown. Crucially, its drawdown exits and equity-scaled sizing create path-dependent simulations across different fee scenarios.
 
 ## Report Layer
 

@@ -3,7 +3,9 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A delta-neutral cryptocurrency funding rate arbitrage research framework with trackable backtest results. The system collects historical 8-hour funding rate data across perpetual futures on **Binance**, **Bybit**, and **OKX**, then backtests strategies that harvest funding payments in both positive and negative funding regimes.
+A delta-neutral cryptocurrency funding rate arbitrage research framework with rigorous backtest methodology. The system collects historical 8-hour funding rate data across perpetual futures on **Binance**, **Bybit**, and **OKX**, then backtests strategies that harvest funding payments in both positive and negative funding regimes.
+
+> **Note:** This repository has undergone a rigorous methodological review. Previous versions reported Sharpe ratios > 6.0 due to data alignment bugs and incorrect fee arithmetic. The current version implements exact timestamp alignment, correct 50 bps round-trip fee accounting, and explicit opportunity cost deduction. The realistic Sharpe ratio for the best configuration is **1.97**. See `ANALYSIS.md` for the full diagnostic report.
 
 ---
 
@@ -13,7 +15,7 @@ This framework implements and compares multiple approaches to funding rate arbit
 
 1. **Data Ingestion** — Downloads and caches 8-hour funding rates, OHLCV prices, and open-interest data via `ccxt` and optional CoinAPI.
 2. **Signal Generation** — Computes composite signals including funding z-scores, basis momentum, open-interest concentration, and term structure.
-3. **Backtest Engine** — Replays historical funding snapshots with realistic fee models, slippage, and risk management.
+3. **Backtest Engine** — Replays historical funding snapshots with realistic fee models (spot + perp + slippage), opportunity cost deduction, and path-dependent risk management (equity-scaled sizing and drawdown limits).
 4. **Strategy Evolution** — Documents the full journey from a failing mean-reversion baseline, to a working adaptive carry strategy, to a bidirectional engine that captures yield in both positive and negative funding regimes.
 
 ### Core Idea
@@ -22,214 +24,89 @@ Perpetual futures exchanges use funding rates to anchor perp prices to spot. In 
 
 ---
 
-## Data Used
+## The Reality Check: Bugs, Diagnoses, and Fixes
 
-The backtest uses the following data sources and characteristics:
+During the methodological review, we discovered several critical flaws in the original backtest that artificially inflated the Sharpe ratio from ~1.97 to > 6.0. Here is the full accounting of every problem found, how it was diagnosed, and how it was solved.
 
-| Attribute | Description |
-|-----------|-------------|
-| **Exchanges** | Binance, Bybit, OKX |
-| **Symbols** | 47 perpetual pairs (BTC, ETH, SOL, BNB, XRP, DOGE, and others — see `config/universe.yaml`) |
-| **Frequency** | 8-hour funding rate snapshots (3 periods per day) |
-| **Date Range** | January 2024 – April 2026 (~2.3 years, ~5,200 periods) |
-| **Total Records** | ~133,000 funding rate observations |
-| **Additional Data** | Spot and perpetual OHLCV (for basis calculation), open-interest snapshots |
+### 1. The Data Alignment Bug (Phantom Timestamps)
 
-> **Privacy Note:** Raw market data is cached locally in `data/cache/` and is excluded from version control. The repository contains only the backtest logic, configuration, and aggregated results. Users must run the downloaders themselves to populate the local cache.
+**The Problem:** The backtest engine iterates over a chronological grid of timestamps. We discovered that the grid had 3,357 unique timestamps instead of the expected 2,522 (for a 2.3-year period at 8-hour intervals). Furthermore, the intersection of BTC and TIA data was only 66.9%, despite both covering the exact same date range.
 
----
+**The Diagnosis:** 
+1. **Sub-second API Jitter:** Binance API returns timestamps with fractional milliseconds (e.g., `2024-01-05 00:00:00.001000`). When merged with clean timestamps, pandas treated these as distinct rows, creating 835 "phantom" duplicate time slots where some symbols were invisible to others.
+2. **Resample Misalignment:** Symbols with native 4-hour intervals (like TIA and WIF) were aggregated to 8-hour buckets using `pd.resample("8h", origin="start_day")`. Without explicit boundary labels, pandas defaulted to `closed='right', label='right'`, which shifted the 4-hour data by 8 hours, breaking alignment with native 8-hour symbols.
 
-## Strategy Evolution
+**The Fix:** 
+- Added `dt.floor("s")` to all timestamps immediately upon loading to strip sub-second jitter.
+- Added `closed="left", label="left"` to the resample function to ensure `[00:00, 08:00)` correctly maps to `00:00`.
+- *Result:* The timestamp grid compacted to exactly 2,522 periods, and the BTC/TIA intersection returned to 100.0%.
 
-### Step 1: Baseline Z-Score Mean Reversion (Failed)
+### 2. The Fee Arithmetic Bug (Understated Costs)
 
-Our first approach used a rolling z-score on funding rates:
-- **Entry:** When z-score > 1.5 and annualised rate > 5%
-- **Exit:** When z-score returns to 0
-- **Logic:** Bet that extreme funding rates will mean-revert
+**The Problem:** The original report claimed a "Realistic" fee scenario of 5 bps per round trip, which is impossible for retail or low-tier VIP traders crossing the spread on two legs.
 
-**Why it failed:**
-- Funding rates in crypto exhibit strong **autocorrelation**, not mean reversion. Extreme rates tend to persist rather than immediately reverse.
-- The strategy entered on temporary spikes and exited as rates "normalised," often locking in losses.
-- During sustained high-funding regimes (common in bull markets), the strategy sat in cash while carry traders collected consistent yield.
+**The Diagnosis:** The fee formula in the report and the engine's cost attribution were misaligned. Slippage must be applied to *both* the spot and perpetual legs.
 
-| Metric | Value |
-|--------|-------|
-| Cumulative Return | **-6.27%** |
-| Annual Return | -0.3% |
-| Sharpe Ratio | -0.95 |
-| Max Drawdown | -10.0% |
-| Win Rate | 17.0% |
+**The Fix:** 
+- Explicitly defined the Realistic scenario: 10 bps spot taker + 5 bps perp taker + 5 bps slippage per leg.
+- Correct formula: `(10 + 5 + 5×2) = 25 bps per entry` = **50 bps per round trip**.
+- *Result:* Trading costs consumed 10.87% of the gross funding income, reducing the net PnL drastically.
 
-### Step 2: Adaptive Carry — Following the Trend (Worked)
+### 3. The Opportunity Cost Omission
 
-We shifted the rationale from *mean reversion* to *trend following*:
-- **Entry:** When the 7-day mean funding rate is sustainably high (> 8% annualised), momentum is positive, and the rate has been positive for 6+ consecutive periods.
-- **Exit:** Only when momentum turns strongly negative, the rolling mean drops below a threshold, or a max holding period is reached.
-- **Logic:** Ride the autocorrelation of funding rates. If a market is paying 20%+ annualised to short perps, that regime typically persists for weeks.
+**The Problem:** The strategy locks up capital in spot assets and perpetual margin. The original backtest treated the gross funding income as pure profit, ignoring the risk-free rate that could be earned by simply lending stablecoins.
 
-**Why it works:**
-- **Autocorrelation exploitation:** Crypto funding rates have significant positive serial correlation. A high 7-day mean predicts continued elevated rates.
-- **Reduced trading frequency:** Wider entry thresholds and no take-profit levels cut transaction costs dramatically.
-- **Signal-strength sizing:** Position size scales with the confidence of the carry signal.
-- **Risk management:** Tight per-position loss limits (1.5% of equity) and portfolio drawdown guards (8%) protect capital during regime shifts.
+**The Fix:** 
+- Implemented a 4% annual opportunity cost.
+- Crucially, this cost is charged *only on the actually deployed collateral* for the exact duration of each trade, and deducted directly from the gross funding income.
+- *Result:* Opportunity cost consumed another 5.96% of the gross funding income.
 
-**But we noticed something critical:** The strategy only made money when funding was positive. In 2026, when funding turned deeply negative, the strategy sat in cash while the market was paying shorts to hold perps. We were leaving money on the table.
+### 4. The Path-Dependence Illusion
 
-### Step 3: Bidirectional Carry — The Bug Hunt
+**The Problem:** When running the parameter sweep across Optimistic, Realistic, and Pessimistic fee scenarios, we noticed the Pessimistic scenario executed 379 round trips compared to 238 for the Realistic scenario. A fee filter should *reduce* trades, not increase them.
 
-The natural extension: go **short spot + long perp** when funding is sustainably negative, mirroring the long logic.
+**The Diagnosis:** The backtest engine does not filter trades by `expected carry > cost`. Instead, the higher fees in the Pessimistic scenario eroded equity faster. This triggered the portfolio-level `max_drawdown` limit (8%) 110 distinct times, forcing the liquidation of 161 positions. Of those, 134 were subsequently re-opened when the signal persisted, creating a churn spiral.
 
-**First implementation (broken):**
+**The Fix:** 
+- Acknowledged that the three fee scenarios are **different path-dependent simulations**, not the same strategy with costs subtracted post-hoc.
+- Added explicit warnings about the strategy's fragility in high-fee environments due to risk-management feedback loops.
 
-| Metric | Value |
-|--------|-------|
-| Sharpe | 3.42 |
-| Annual Return | 2.17% |
-| Max Drawdown | -1.41% |
-| Short Win Rate | **20.4%** |
-| Short Trades | 333 |
+### 5. The Signal Quality Revelation (Fat-Tail Carry)
 
-Something was wrong. Shorts were losing money even in 2026 when funding averaged **-11.6% annualised**. Why?
+**The Problem:** Despite the strategy being profitable overall, a deep dive into the trade logs revealed that 25 out of 43 symbols were net-negative contributors after costs.
 
-**Deep dive into the trade logs revealed the bug:**
+**The Diagnosis:** We computed the per-trade carry as a fraction of position notional. The median per-trade carry was only 19.7 bps, while the round-trip break-even cost was 50 bps. 
+- 64.7% of historical trades failed to clear break-even.
+- 89.9% of trades failed to clear a 3× break-even hurdle (150 bps).
+- However, the 10.1% of trades that exceeded 150 bps carry generated +4.79% net PnL, driving all the strategy's alpha.
 
-| Problem | Detail |
-|---------|--------|
-| **Entry/exit mismatch** | Short entry used `fr_momentum_3d < 0` (3-day trend), but exits used `fr_momentum_7d > 0.00008` (7-day trend). These two metrics can have **opposite signs**. |
-| **Immediate churn** | 293 of 333 short trades (88%) exited on "pos_momentum." 136 trades (41%) were held for only **one 8h period**. |
-| **Fee death spiral** | A round trip costs ~0.34% of collateral (~$60 on a $17k position). To break even in one period, funding must exceed **155% annualised** — nearly impossible. |
-| **No negative streak filter** | Longs required `positive_streak >= 6`, but shorts had no equivalent discipline, letting noise trades through. |
-
-**The fix:**
-1. Added `negative_streak >= 6` filter — same discipline as longs
-2. Short entry now requires **both** `fr_momentum_3d < 0` **AND** `fr_momentum_7d < 0` — both timeframes must agree
-3. Added `min_hold_periods = 3` — prevents signal-based exits before 24 hours, killing the fee-bleed churn
-
-### Step 4: Bidirectional Results (Fixed)
-
-The fixed bidirectional engine now outperforms unidirectional on every metric:
-
-| Metric | Unidirectional (Carry Moderate) | Bidirectional 5% Borrow | Improvement |
-|--------|--------------------------------|------------------------|-------------|
-| **Sharpe** | 6.10 | **6.36** | +4.3% |
-| **Annual Return** | 2.43% | **4.04%** | +66% |
-| **Max Drawdown** | -0.69% | **-0.78%** | Comparable |
-| **Total Trades** | 176 | 338 | +92% |
-| **Long Win Rate** | 55.7% | 54.6% | Comparable |
-| **Short Win Rate** | N/A | **37.8%** | New |
-| **Long PnL** | $12,074 | $11,215 | Comparable |
-| **Short PnL** | $0 | **$9,308** | +$9,308 |
-| **Combined PnL** | $12,074 | **$20,523** | **+70%** |
-
-> Borrow costs at 5% annual were **not** the problem — they averaged only ~$0.78 per 8h period on a $17k position. The real killer was the 0.34% round-trip fee churn on 1-period trades.
+**The Fix:** 
+- Reclassified the strategy from a "consistent yield generator" to a **"fat-tail carry play."** The entry signal systematically misjudges expected carry for most symbols, relying on a few massive funding spikes (like WIF and AXS) to cover the bleed from the rest.
 
 ---
 
 ## Results
 
-### Equity Curves: Unidirectional vs Bidirectional
-
-![Equity Comparison](results/images/equity_comparison.png)
-
-The bidirectional strategy (solid green) pulls ahead of unidirectional (dashed blue) starting in early 2026 when funding turns deeply negative and the short side activates.
-
-### Drawdown Comparison
-
-![Drawdown Comparison](results/images/drawdown_comparison.png)
-
-Both strategies maintain sub-1% drawdowns. The bidirectional variants show slightly deeper but still minimal drawdowns, a fair trade for 66% higher returns.
-
-### Regime Sensitivity
-
-![Regime Sensitivity](results/images/regime_sensitivity.png)
-
-The strategy is a **funding-rate thermostat** — it harvests yield in both directions and sits in cash during neutral regimes.
-
-| Year | Avg Funding Rate | Long PnL | Short PnL | Combined Return |
-|------|-----------------|----------|-----------|-----------------|
-| **2024** | **+11.86%** ann. | ~+$9,000 | ~-$25 | **+~9%** |
-| **2025** | **+1.29%** ann. | ~+$1,800 | ~+$471 | **+~2%** |
-| **2026** | **-11.56%** ann. | ~+$400 | **+$8,862** | **+~8%** |
-
-- **2024** was a "golden age" for longs: March averaged **45%** annualised funding.
-- **2025** saw a **10x collapse** in funding rates. Both sides sat in cash because the 8% entry threshold was rarely met.
-- **2026** turned deeply negative. The short side captured **$8,862** from 45 trades at a 55.6% win rate.
-
-### Risk-Return Metrics
-
-![Metrics Comparison](results/images/metrics_comparison.png)
-
 ### Parameter Sweep: Full Comparison
 
-| Configuration | Sharpe | Ann. Return | Max DD | Win Rate | Final Equity |
-|---------------|--------|-------------|--------|----------|--------------|
-| **Bidirectional 5% borrow** | **6.36** | **4.04%** | -0.78% | 46.4% | **$120,676** |
-| Bidirectional 8% borrow | 5.76 | 3.64% | -1.07% | 45.0% | $118,486 |
-| Bidirectional 12% borrow | 4.94 | 3.11% | -1.84% | 42.3% | $115,628 |
-| Carry Moderate (uni) | 6.10 | 2.43% | -0.69% | 55.7% | $112,078 |
-| Carry Relaxed | 6.35 | 2.66% | -0.86% | 55.4% | $113,289 |
-| Carry Concentrated | 6.16 | 2.70% | -0.78% | 68.1% | $113,497 |
+All figures use realistic VIP-0 tier fees (50 bps round trip) and deduct a 4% annual opportunity cost.
 
-> All figures use realistic VIP-0 tier fees (0.10% spot taker, 0.05% perp taker, 1 bp slippage per leg).
-
-### Per-Pair Insights
-
-Not all pairs are equal. The strategy's alpha is concentrated in a handful of mid-cap alts, while large caps barely register.
-
-**AXS — the short king.** AXS produced **+$6,802** total, with **+$6,865 from shorts alone**. In Jan–Mar 2026, AXS funding rates plunged to -400% to -500% annualised. Four monster short trades held 22–28 periods each captured **$6,253** between them.
-
-**WIF — memecoin lottery.** WIF netted **+$1,848**, but it was lumpy: one 70-period long in Mar 2024 captured **+$1,342** during the memecoin mania, while nine other trades were small noise losses. 
-
-**MKR — the perfect record.** Six long trades, **100% win rate**, +$625. Average hold: 132 periods (~44 days). MKR funding spikes during DeFi stress and stays elevated — ideal for a patient carry strategy.
-
-**HBAR** Worst performer at **-$370**. Four of its eight longs in Apr 2024 were 1-period round trips that immediately reversed. HBAR funding flips sign faster than the 7-day mean can catch, making it a natural victim of fee churn.
-
-### QuantStats Tearsheets
-
-Full interactive tearsheets for each configuration:
-
-**Bidirectional:**
-- [`tearsheet_bidirectional_5borrow.html`](results/sweep/tearsheet_bidirectional_5borrow.html) — **Best overall**
-- [`tearsheet_bidirectional_8borrow.html`](results/sweep/tearsheet_bidirectional_8borrow.html)
-- [`tearsheet_bidirectional_12borrow.html`](results/sweep/tearsheet_bidirectional_12borrow.html)
-
-**Unidirectional:**
-- [`tearsheet_carry_moderate.html`](results/sweep/tearsheet_carry_moderate.html)
-- [`tearsheet_carry_concentrated.html`](results/sweep/tearsheet_carry_concentrated.html)
-- [`tearsheet_carry_relaxed.html`](results/sweep/tearsheet_carry_relaxed.html)
+| Strategy | Sharpe | Ann. Return | Max DD | Win Rate | Trades |
+|----------|--------|-------------|--------|----------|--------|
+| **Carry Strict** | **1.97** | **1.42%** | -1.80% | 46.0% | 253 |
+| Carry Concentrated | 1.88 | 1.61% | -1.70% | 46.1% | 179 |
+| Carry Diversified | 0.66 | 0.44% | -3.00% | 35.3% | 478 |
+| Carry Moderate | 0.44 | 0.33% | -3.65% | 35.3% | 342 |
 
 ---
 
-## How We Got Here: A Playbook
+## Known Limitations
 
-This repository documents a realistic research workflow, including the mistakes:
-
-1. **Start simple.** The z-score baseline failed (-6.27%) but taught us funding rates are autocorrelated, not mean-reverting.
-2. **Follow the data.** When 2024 funding averaged 11.86% and 2026 flipped to -11.56%, the strategy must adapt to both regimes.
-3. **Question surprises.** Bidirectional initially underperformed (Sharpe 3.42). Instead of blaming borrow costs, we dug into trade logs and found a momentum-filter mismatch causing 1-period fee churn.
-4. **Fix with discipline.** Added the same streak and momentum filters to shorts that longs already had. Minimum hold periods prevented round-trip fee bleed.
-5. **Validate improvement.** Fixed bidirectional now beats unidirectional by 70% in total PnL with comparable drawdowns.
-
----
-
-## Next Steps
-
-### 1. Funding Rate Prediction
-Instead of only using backward-looking rolling means, add a lightweight predictor:
-- **Autoregressive model** (AR(1) or AR(3)) on funding rates
-- **Macro regime classifier** (BTC dominance, volatility, open-interest growth) to predict whether funding will persist
-
-### 2. Tiered Borrow Cost Model
-The current borrow model assumes a flat 5-12% annual rate. In reality:
-- **BTC/ETH:** Borrow rates are low (~2-5%) because liquidity is deep
-- **Mid-cap alts:** Borrow rates can spike to 20-50% during stress
-- A tiered model by market-cap or exchange margin book would improve realism
-
-### 3. Live Trading Integration
-- **Exchange API wrappers** for Binance/Bybit/OKX to automate position entry/exit
-- **Real-time funding rate monitor** with Telegram/Slack alerts when entry thresholds are breached
-- **Portfolio rebalancer** that checks hedge ratios and funding payments every 8 hours
+1. **Basis Mark-to-Market Not Modeled**: The current backtest does not merge spot/perp prices, meaning basis MtM is structurally zero. In reality, basis convergence/divergence creates unrealized PnL that affects margin requirements and risk management.
+2. **Execution Slippage**: The backtest assumes execution at the closing mark price. In reality, crossing the spread on both spot and perp legs will incur additional slippage.
+3. **Exchange Risk**: The strategy requires holding capital on centralized exchanges. The yield premium is partially a risk premium for exchange counterparty risk.
+4. **In-Sample Bias**: The current parameter sweep is entirely in-sample. A Walk-Forward Out-Of-Sample (OOS) test splitting 2024 (train) vs 2025-2026 (test) is required before live deployment.
+5. **Survivorship Bias**: Only currently-listed symbols are included. Delisted symbols are excluded, biasing results upward. Given the strategy's ultra-low volatility (0.72%), the Sharpe metric is statistically fragile — every 1% of return inflation artificially boosts Sharpe by ~1.4 units.
 
 ---
 
@@ -252,22 +129,12 @@ python -m data.downloader --config config/default.yaml
 python run_parameter_sweep.py              # unidirectional carry sweep
 python run_bidirectional_sweep.py          # bidirectional carry sweep
 
-# 5. Generate plots and reports
-python plot_sweep_results.py               # comparison charts
-python generate_tearsheets.py              # QuantStats HTML reports
-
-# 6. Run tests
-python -m pytest tests/ -v --tb=short
+# 5. Generate diagnostic reports
+python diagnostics.py                      # exact attribution and signal quality
+python validate_alignment.py               # verify timestamp alignment
 ```
 
 > **Note:** The repository contains backtest logic, configuration, and summary images. Raw equity curves and trade logs are generated locally and excluded from git by `.gitignore`. After cloning, follow the steps above to reproduce all results.
-
-### Docker
-
-```bash
-docker compose up app         # Run download + backtest inside container
-docker compose up notebook    # Launch Jupyter at http://localhost:8888
-```
 
 ---
 
@@ -277,43 +144,26 @@ docker compose up notebook    # Launch Jupyter at http://localhost:8888
 funding_arbs/
 ├── config/
 │   ├── default.yaml          # Global parameters
-│   └── universe.yaml         # 47 tracked perpetual pairs
+│   ├── fees.yaml             # Fee scenario definitions (Opt/Real/Pess)
+│   └── universe.yaml         # Tracked perpetual pairs
 ├── data/
 │   ├── downloader.py         # Funding rate ingestion (ccxt + CoinAPI)
 │   ├── spot_prices.py        # OHLCV for basis calculation
-│   ├── oi_fetcher.py         # Open interest downloader
-│   ├── db.py                 # PostgreSQL / SQLite interface
-│   └── schemas.py            # Pydantic data models
+│   └── oi_fetcher.py         # Open interest downloader
 ├── research/
 │   ├── funding_zscore.py     # Rolling z-score signals
 │   ├── basis_momentum.py     # Perp-spot basis momentum
-│   ├── oi_concentration.py   # Open-interest crowding
-│   ├── term_structure.py     # Yield-curve-style analysis
 │   └── kalman_hedge.py       # Dynamic hedge ratio (Kalman filter)
 ├── backtest/
 │   ├── enhanced_engine.py    # Carry-trade backtest engine
 │   └── fee_model.py          # Realistic cost model
 ├── results/
-│   ├── sweep/                # Backtest outputs (metrics, equity, tearsheets)
-│   └── images/               # Comparison plots
-├── tests/                    # pytest suite
-└── notebooks/                # Research notebooks
+│   └── sweep/                # Backtest outputs (metrics, equity, tearsheets)
+├── diagnostics.py            # Exact attribution and reconciliation script
+├── validate_alignment.py     # Timestamp alignment verification
+├── ANALYSIS.md               # Diagnostic report
+└── README.md                 # This file
 ```
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|-------|------------|
-| Language | Python 3.11+ |
-| Exchange APIs | ccxt (Binance, Bybit, OKX) |
-| Data Processing | pandas, numpy, pyarrow |
-| Kalman Filter | filterpy (with rolling OLS fallback) |
-| Reports | quantstats, matplotlib, seaborn |
-| Testing | pytest |
-| Lint / Format | ruff, mypy |
-| Containers | Docker + Docker Compose |
 
 ---
 
@@ -325,28 +175,4 @@ This project is licensed under the [MIT License](LICENSE).
 MIT License
 
 Copyright (c) 2026 Carson1332
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
-
----
-
-## Disclaimer
-
-This repository is for **research and educational purposes only**. It does not constitute financial advice. Cryptocurrency trading involves significant risk. Past backtest performance does not guarantee future results.

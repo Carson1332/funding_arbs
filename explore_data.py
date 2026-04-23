@@ -68,6 +68,6 @@ print('\n=== FUNDING RATE REGIMES ===')
 binance_ts = binance.groupby('timestamp')['funding_rate'].mean()
 binance_ts = binance_ts.sort_index()
 print('Mean rate over time (monthly):')
-monthly = binance_ts.resample('M').mean()
+monthly = binance_ts.resample('ME').mean()
 for idx, val in monthly.items():
     print(f'  {idx.strftime("%Y-%m")}: {val:.6f} (ann: {val*3*365:.2%})')

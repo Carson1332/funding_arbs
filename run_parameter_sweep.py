@@ -23,9 +23,11 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -33,6 +35,29 @@ from backtest.enhanced_engine import (
     compute_funding_features,
     load_all_funding_data,
 )
+
+
+def _load_fee_scenarios(path: str = "config/fees.yaml") -> dict[str, dict[str, Any]]:
+    """Load fee scenarios from YAML. Returns dict keyed by scenario name."""
+    p = Path(path)
+    if not p.exists():
+        return {
+            "default": {
+                "spot_taker_fee": 0.0010,
+                "perp_taker_fee": 0.0005,
+                "slippage_bps": 1.0,
+            }
+        }
+    with open(p) as f:
+        data = yaml.safe_load(f)
+    return {
+        name: {
+            "spot_taker_fee": cfg.get("spot_taker_fee", 0.0010),
+            "perp_taker_fee": cfg.get("perp_taker_fee", 0.0005),
+            "slippage_bps": cfg.get("slippage_bps", 1.0),
+        }
+        for name, cfg in data.get("fee_scenarios", {}).items()
+    }
 
 
 @dataclass
@@ -63,6 +88,9 @@ class SweepConfig:
     ts_long_rate_min: float = 0.04
     ts_slope_exit: float = -0.00005
 
+    # Capital cost
+    stablecoin_yield: float = 0.04  # annual opportunity cost on locked collateral
+
 
 @dataclass
 class CarryPosition:
@@ -72,17 +100,45 @@ class CarryPosition:
     collateral: float
     entry_cost: float
     funding_collected: float = 0.0
+    basis_pnl: float = 0.0
     periods_held: int = 0
     peak_pnl: float = 0.0
     signal_strength: float = 1.0
+    direction: str = "long"
+
+    # Price tracking for basis MtM
+    entry_spot_price: float = 0.0
+    entry_perp_price: float = 0.0
+    last_spot_price: float = 0.0
+    last_perp_price: float = 0.0
+
+    @property
+    def quantity(self) -> float:
+        return self.collateral / self.entry_perp_price if self.entry_perp_price > 0 else 0.0
 
     @property
     def net_pnl(self) -> float:
-        return self.funding_collected - self.entry_cost
+        return self.funding_collected + self.basis_pnl - self.entry_cost
 
     @property
     def return_on_collateral(self) -> float:
         return self.net_pnl / self.collateral if self.collateral > 0 else 0
+
+    def update_basis_mtm(self, spot_price: float, perp_price: float) -> float:
+        """Compute and add period basis MtM. Returns period PnL."""
+        if self.last_spot_price <= 0 or self.last_perp_price <= 0:
+            self.last_spot_price = spot_price
+            self.last_perp_price = perp_price
+            return 0.0
+        q = self.quantity
+        if self.direction == "long":
+            period_pnl = q * ((spot_price - self.last_spot_price) - (perp_price - self.last_perp_price))
+        else:
+            period_pnl = q * (-(spot_price - self.last_spot_price) + (perp_price - self.last_perp_price))
+        self.basis_pnl += period_pnl
+        self.last_spot_price = spot_price
+        self.last_perp_price = perp_price
+        return period_pnl
 
 
 @dataclass
@@ -143,7 +199,8 @@ class SweepBacktest:
         return (len(self.state.positions) < self.config.max_positions and
                 self.state.available_capital > self.state.equity * 0.05)
 
-    def _open(self, ts, symbol, exchange, rate, signal_strength=1.0):
+    def _open(self, ts, symbol, exchange, rate, signal_strength=1.0,
+              spot_price: float = 0.0, perp_price: float = 0.0, direction: str = "long"):
         collateral = self._position_size(signal_strength)
         if collateral < 100:
             return
@@ -153,13 +210,42 @@ class SweepBacktest:
             symbol=symbol, exchange=exchange, entry_time=ts,
             collateral=collateral, entry_cost=cost,
             signal_strength=signal_strength,
+            entry_spot_price=spot_price, entry_perp_price=perp_price,
+            last_spot_price=spot_price, last_perp_price=perp_price,
+            direction=direction,
         )
         self.state.trade_log.append({
             "timestamp": ts, "symbol": symbol, "action": "OPEN",
             "collateral": collateral, "entry_cost": cost,
             "funding_rate": rate, "signal_strength": signal_strength,
+            "spot_price": spot_price, "perp_price": perp_price,
+            "direction": direction,
             "equity": self.state.equity,
         })
+
+    def _collect_period_pnl(self, row: pd.Series, pos: CarryPosition) -> None:
+        """Update funding, basis MtM, and opportunity cost for one position."""
+        rate = row["funding_rate"]
+        if pos.direction == "long":
+            pos.funding_collected += pos.collateral * rate
+        else:
+            pos.funding_collected += pos.collateral * (-rate)
+
+        # Basis mark-to-market
+        for col_spot, col_perp in [("spot_close", "perp_close")]:
+            if col_spot in row.index and col_perp in row.index:
+                sp = row[col_spot]
+                pp = row[col_perp]
+                if pd.notna(sp) and pd.notna(pp) and sp > 0 and pp > 0:
+                    pos.update_basis_mtm(float(sp), float(pp))
+
+        # Opportunity cost on locked collateral
+        if self.config.stablecoin_yield > 0:
+            cost_per_period = pos.collateral * (self.config.stablecoin_yield / 1095)
+            pos.funding_collected -= cost_per_period
+
+        pos.periods_held += 1
+        pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
 
     def _close(self, ts, key, reason="signal"):
         if key not in self.state.positions:
@@ -172,6 +258,7 @@ class SweepBacktest:
             "timestamp": ts, "symbol": pos.symbol, "action": "CLOSE",
             "reason": reason, "collateral": pos.collateral,
             "funding_collected": pos.funding_collected,
+            "basis_pnl": pos.basis_pnl,
             "total_costs": pos.entry_cost + exit_cost,
             "net_pnl": realised,
             "periods_held": pos.periods_held,
@@ -201,15 +288,12 @@ class SweepBacktest:
         for i, ts in enumerate(timestamps):
             snap = binance[binance["timestamp"] == ts]
 
-            # 1. Collect funding
+            # 1. Collect funding + basis MtM + opportunity cost
             for key, pos in list(self.state.positions.items()):
                 row = snap[snap["symbol"] == pos.symbol]
                 if row.empty:
                     continue
-                rate = row.iloc[0]["funding_rate"]
-                pos.funding_collected += pos.collateral * rate
-                pos.periods_held += 1
-                pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
+                self._collect_period_pnl(row.iloc[0], pos)
 
             # 2. Portfolio risk
             if self.state.drawdown > self.config.max_drawdown_exit:
@@ -289,7 +373,10 @@ class SweepBacktest:
                 for sym, r, score, strength in candidates:
                     if not self._can_open():
                         break
-                    self._open(ts, sym, "binance", r["funding_rate"], strength)
+                    spot_price = r.get("spot_close", 0.0)
+                    perp_price = r.get("perp_close", 0.0)
+                    self._open(ts, sym, "binance", r["funding_rate"], strength,
+                               spot_price=spot_price, perp_price=perp_price, direction="long")
 
             # 5. Record
             self.state.equity_history.append({
@@ -325,15 +412,12 @@ class SweepBacktest:
         for i, ts in enumerate(timestamps):
             snap = binance[binance["timestamp"] == ts]
 
-            # 1. Collect funding
+            # 1. Collect funding + basis MtM + opportunity cost
             for key, pos in list(self.state.positions.items()):
                 row = snap[snap["symbol"] == pos.symbol]
                 if row.empty:
                     continue
-                rate = row.iloc[0]["funding_rate"]
-                pos.funding_collected += pos.collateral * rate
-                pos.periods_held += 1
-                pos.peak_pnl = max(pos.peak_pnl, pos.net_pnl)
+                self._collect_period_pnl(row.iloc[0], pos)
 
             # 2. Portfolio risk
             if self.state.drawdown > self.config.max_drawdown_exit:
@@ -390,7 +474,7 @@ class SweepBacktest:
                         continue
 
                     ann_7d = r["fr_mean_7d"] * 3 * 365
-                    if ann_7d < 0.06:
+                    if ann_7d < self.config.min_ann_rate_entry:
                         continue
 
                     if pd.notna(r.get("fr_momentum_3d")) and r["fr_momentum_3d"] < 0:
@@ -422,7 +506,10 @@ class SweepBacktest:
                 for sym, r, score, strength in candidates:
                     if not self._can_open():
                         break
-                    self._open(ts, sym, "binance", r["funding_rate"], strength)
+                    spot_price = r.get("spot_close", 0.0)
+                    perp_price = r.get("perp_close", 0.0)
+                    self._open(ts, sym, "binance", r["funding_rate"], strength,
+                               spot_price=spot_price, perp_price=perp_price, direction="long")
 
             # 5. Record
             self.state.equity_history.append({
@@ -562,38 +649,43 @@ def run_parameter_sweep():
          "min_ann_rate_entry": 0.08, "min_positive_streak": 6},
     ]
 
+    fee_scenarios = _load_fee_scenarios()
     all_results = {}
     out_dir = Path("results/sweep")
     out_dir.mkdir(exist_ok=True)
 
     for cfg_dict in configs:
         name = cfg_dict.pop("name")
-        print(f"\n--- {name} ---")
 
-        config = SweepConfig(**cfg_dict)
-        bt = SweepBacktest(config)
-        start = time.time()
-        state = bt.run(df)
-        elapsed = time.time() - start
+        for fee_name, fee_vals in fee_scenarios.items():
+            run_name = f"{name}_{fee_name}" if len(fee_scenarios) > 1 else name
+            print(f"\n--- {run_name} ---")
 
-        metrics = compute_metrics(state)
-        all_results[name] = metrics
+            merged_cfg = {**cfg_dict, **fee_vals}
+            config = SweepConfig(**merged_cfg)
+            bt = SweepBacktest(config)
+            start = time.time()
+            state = bt.run(df)
+            elapsed = time.time() - start
 
-        # Save equity curve
-        eq_df = pd.DataFrame(state.equity_history)
-        eq_df.to_csv(out_dir / f"equity_{name}.csv", index=False)
+            metrics = compute_metrics(state)
+            all_results[run_name] = metrics
 
-        # Save trades
-        if state.trade_log:
-            pd.DataFrame(state.trade_log).to_csv(out_dir / f"trades_{name}.csv", index=False)
+            # Save equity curve
+            eq_df = pd.DataFrame(state.equity_history)
+            eq_df.to_csv(out_dir / f"equity_{run_name}.csv", index=False)
 
-        print(f"  Time: {elapsed:.1f}s | Sharpe: {metrics.get('sharpe')} | "
-              f"Return: {metrics.get('annual_return_pct')}% | "
-              f"MaxDD: {metrics.get('max_drawdown_pct')}% | "
-              f"WinRate: {metrics.get('win_rate_pct')}% | "
-              f"Trades: {metrics.get('total_trades')} | "
-              f"PF: {metrics.get('profit_factor')} | "
-              f"Final: ${metrics.get('final_equity', 0):,.0f}")
+            # Save trades
+            if state.trade_log:
+                pd.DataFrame(state.trade_log).to_csv(out_dir / f"trades_{run_name}.csv", index=False)
+
+            print(f"  Time: {elapsed:.1f}s | Sharpe: {metrics.get('sharpe')} | "
+                  f"Return: {metrics.get('annual_return_pct')}% | "
+                  f"MaxDD: {metrics.get('max_drawdown_pct')}% | "
+                  f"WinRate: {metrics.get('win_rate_pct')}% | "
+                  f"Trades: {metrics.get('total_trades')} | "
+                  f"PF: {metrics.get('profit_factor')} | "
+                  f"Final: ${metrics.get('final_equity', 0):,.0f}")
 
     # Summary
     print(f"\n{'='*70}")
